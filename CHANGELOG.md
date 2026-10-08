@@ -1,5 +1,12 @@
 # Nhật ký thay đổi
 
+## Tiếp theo (chưa phát hành)
+- Watchdog: ngưỡng đứng yên riêng theo loại job (ảnh 20 phút, giọng đọc 5 phút); số lần bị thu hồi đã hiện sẵn trên bảng job.
+- Ảnh gốc vẽ thêm **vùng tím là phần chung** của hai khung video/truyện; tooltip ghi rõ tỉ lệ trùng.
+- Cài đặt `english_allow`: từ/cụm tiếng Việt cho phép trong mô tả ảnh, không bị gắn cờ `non_english_prompt`.
+- Gộp trùng tách thành **hai công tắc độc lập** (tự gợi ý theo tên / nút nhờ LLM); dự án cũ dùng `dedupe_mode` được tự đổi tương đương.
+- `storyforge-app doctor` kiểm tra thêm: quyền ghi thư mục dữ liệu, dung lượng đĩa, cổng bận, job kẹt vì thiếu worker; `serve` báo trước khi cổng bận.
+
 ## 0.3.0
 
 ### Gộp trùng bớt ồn

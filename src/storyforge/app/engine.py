@@ -31,9 +31,11 @@ DEFAULT_SETTINGS: dict = {
     "llm_model": "", "llm_fallback_model": "", "llm_extra": "", "llm_temperature": 0.2, "llm_max_tokens": None,
     "beats_span_retries": 1,       # số lần bắt LLM chia lại khi sai khoảng đoạn; hết lượt thì tự sửa + gắn cờ
     "context_chapters": 3,
-    "dedupe_mode": "fuzzy",        # fuzzy: gợi ý theo tên gần giống | llm_only: chỉ khi bấm "Nhờ LLM rà" | off
+    "dedupe_mode": "fuzzy",        # cũ: fuzzy | llm_only | off (giữ để đọc dự án cũ, xem settings_of)
+    "dedupe_fuzzy": True,         # tự gợi ý khi tên gần giống
+    "dedupe_llm": True,           # hiện nút "Nhờ LLM rà trùng"
     "dedupe_threshold": 0.90,
-    "check_english": True,
+    "check_english": True, "english_allow": "",   # từ/cụm tiếng Việt cho phép trong mô tả ảnh, phân tách phẩy
     # Ảnh
     "image_model": "", "image_steps": None, "negative_prompt": "", "image_area": 1048576, "ref_size": 1024,
     "max_cast_refs": 2, "max_refs": 4, "crop_overlap_min": 0.6,
@@ -76,8 +78,28 @@ def project(pid: int) -> dict:
 
 def settings_of(p: dict) -> dict:
     s = dict(DEFAULT_SETTINGS)
-    s.update(jl(p.get("settings_json"), {}) or {})
+    stored = jl(p.get("settings_json"), {}) or {}
+    s.update(stored)
+    if "dedupe_fuzzy" not in stored and "dedupe_llm" not in stored:
+        # dự án cũ chỉ có dedupe_mode: fuzzy -> cả hai bật; llm_only -> chỉ LLM; off -> tắt hết
+        fuzzy_on, llm_on = {"fuzzy": (True, True), "llm_only": (False, True), "off": (False, False)}.get(
+            stored.get("dedupe_mode", "fuzzy"), (True, True))
+        s["dedupe_fuzzy"], s["dedupe_llm"] = fuzzy_on, llm_on
     return s
+
+
+def dedupe_fuzzy_on(s: dict) -> bool:
+    """Có tự gợi ý theo tên gần giống không (ưu tiên công tắc mới, rồi tới dedupe_mode cũ)."""
+    if "dedupe_fuzzy" in s:
+        return bool(s["dedupe_fuzzy"])
+    return s.get("dedupe_mode", "fuzzy") == "fuzzy"
+
+
+def dedupe_llm_on(s: dict) -> bool:
+    """Có hiện nút nhờ LLM rà trùng không."""
+    if "dedupe_llm" in s:
+        return bool(s["dedupe_llm"])
+    return s.get("dedupe_mode", "fuzzy") != "off"
 
 
 def wants_video(p: dict) -> bool:
@@ -182,7 +204,7 @@ def _identity_flags(p: dict, name: str, aliases: list[str], existing: list[dict]
         elif a.strip():
             clean.append(a.strip())
     dups = []
-    if s.get("dedupe_mode", "fuzzy") == "fuzzy":
+    if dedupe_fuzzy_on(s):
         thr = float(s["dedupe_threshold"])
         for r in existing:
             score = max(checks.name_similarity(n, m) for n in [name, *clean] for m in [r["name"], *r.get("aliases", [])])
@@ -196,7 +218,8 @@ def _identity_flags(p: dict, name: str, aliases: list[str], existing: list[dict]
 def _lang_flags(p: dict, texts: list[str], names: list[str]) -> list[str]:
     if not p["settings"].get("check_english", True):
         return []
-    return ["non_english_prompt"] if any(checks.non_english(t, names) for t in texts if t) else []
+    allow = [x.strip() for x in str(p["settings"].get("english_allow", "") or "").replace(";", ",").replace("\n", ",").split(",") if x.strip()]
+    return ["non_english_prompt"] if any(checks.non_english(t, [*names, *allow]) for t in texts if t) else []
 
 
 def create_character(p: dict, ch: dict, name: str, aliases: list[str], appearance: str, role: str,
@@ -573,7 +596,8 @@ def crop_info(p: dict, beat: dict, seg: dict | None, panel: dict | None) -> dict
     a = comic.crop_box(beat["img_width"], beat["img_height"], va, seg["focus_x"], seg["focus_y"])
     b = comic.crop_box(beat["img_width"], beat["img_height"], panel_aspect(p, panel), panel["focus_x"], panel["focus_y"])
     ov = comic.overlap(a, b)
-    return {"mismatch": ov < float(s["crop_overlap_min"]), "overlap": round(ov, 2), "video_box": a, "panel_box": b}
+    return {"mismatch": ov < float(s["crop_overlap_min"]), "overlap": round(ov, 2), "video_box": a, "panel_box": b,
+            "inter_box": comic.intersect(a, b)}
 
 
 def crop_mismatches(p: dict, chapter_id: int | None = None) -> int:

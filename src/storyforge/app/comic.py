@@ -109,6 +109,16 @@ def overlap(a: tuple, b: tuple) -> float:
     return (ix * iy) / max(1e-9, min(a[2] * a[3], b[2] * b[3]))
 
 
+def intersect(a: tuple, b: tuple) -> tuple[float, float, float, float] | None:
+    """Vùng giao (x, y, w, h) của hai khung, None khi không giao nhau. Dùng để vẽ
+    vùng chung (tím) lên ảnh gốc: user thấy ngay phần nào xuất hiện ở cả hai khung."""
+    x0, y0 = max(a[0], b[0]), max(a[1], b[1])
+    x1, y1 = min(a[0] + a[2], b[0] + b[2]), min(a[1] + a[3], b[1] + b[3])
+    if x1 <= x0 or y1 <= y0:
+        return None
+    return (x0, y0, x1 - x0, y1 - y0)
+
+
 # --------------------------------------------------------------- font
 FONT_CANDIDATES = [
     "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",

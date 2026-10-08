@@ -1,9 +1,9 @@
 """Gợi ý và gộp nhân vật / bối cảnh bị trùng (do viết tắt, biệt danh, lỗi chính tả).
 
-Chế độ (cài đặt dự án "dedupe_mode"):
-- fuzzy: tự gợi ý khi tên gần giống (ngưỡng dedupe_threshold, mặc định 0.90; tên một chữ không tự khớp tên dài)
-- llm_only: không gợi ý theo tên, chỉ khi bấm "Nhờ LLM rà trùng" (hợp với truyện nhiều người trùng tên con)
-- off: tắt gợi ý; vẫn gộp tay được
+Hai công tắc độc lập (cài đặt dự án):
+- dedupe_fuzzy: tự gợi ý khi tên gần giống (ngưỡng dedupe_threshold, mặc định 0.90)
+- dedupe_llm: hiện nút "Nhờ LLM rà trùng" (hợp với truyện nhiều người trùng tên con)
+Dự án cũ dùng dedupe_mode được tự đổi sang hai công tắc này (xem engine.settings_of).
 """
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from .db import db, jd, jl
 
 def scan(pid: int) -> int:
     p = engine.project(pid)
-    if p["settings"].get("dedupe_mode", "fuzzy") != "fuzzy":
+    if not engine.dedupe_fuzzy_on(p["settings"]):
         return 0
     thr = float(p["settings"]["dedupe_threshold"])
     before = db.val("SELECT COUNT(*) FROM suggestion WHERE project_id=?", pid) or 0
@@ -29,7 +29,7 @@ def scan(pid: int) -> int:
 
 def enqueue_llm(pid: int) -> int:
     p = engine.project(pid)
-    if p["settings"].get("dedupe_mode") == "off":
+    if not engine.dedupe_llm_on(p["settings"]):
         return 0
     chars, locs = engine.all_chars(pid), engine.locs(pid)
     payload = engine._llm_payload(p, llm.dedupe_messages(chars, locs), llm.DedupeOut, "DedupeOut", {

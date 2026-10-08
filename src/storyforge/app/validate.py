@@ -84,7 +84,8 @@ def warnings(project: dict, s: dict) -> list[dict]:
         w("warn", "ref_size", "Ảnh tham chiếu dưới 512 px thường làm mất chi tiết khuôn mặt.")
     if int(s["max_cast_refs"]) * 2 > int(s["max_refs"]) + 1:
         w("info", "max_refs", "Số ảnh tham chiếu tối đa nhỏ hơn số nhân vật × 2: một số nhân vật sẽ chỉ có ảnh toàn thân.")
-    if float(s["dedupe_threshold"]) < 0.85 and s.get("dedupe_mode", "fuzzy") == "fuzzy":
+    fuzzy_on = s.get("dedupe_fuzzy", s.get("dedupe_mode", "fuzzy") == "fuzzy")
+    if fuzzy_on and float(s["dedupe_threshold"]) < 0.85:
         w("warn", "dedupe_threshold", "Ngưỡng gộp trùng dưới 0.85 sẽ sinh nhiều gợi ý sai với truyện nhiều tên giống nhau.")
     if not 0.5 <= float(s["tts_rate"]) <= 2.0:
         w("warn", "tts_rate", "Tốc độ đọc nên trong khoảng 0.5 đến 2.0.")

@@ -44,15 +44,13 @@ def main(argv: list[str] | None = None) -> None:
         print(s.worker_token)
         return
     if args.cmd == "doctor":
-        from . import comic
-
-        miss = system.missing_tools()
-        print(f"Thư mục dữ liệu: {s.data_dir}")
-        print(f"ffmpeg : {s.ffmpeg} {'✗ THIẾU' if 'ffmpeg' in miss else '✓'}")
-        print(f"ffprobe: {s.ffprobe} {'✗ THIẾU' if 'ffprobe' in miss else '✓'}")
-        print(f"Font   : {comic.find_font(s.font_path) or '✗ không thấy (dùng font mặc định, chữ có dấu có thể lỗi)'}")
-        print(system.startup_report() or "Môi trường đủ để dựng video.")
-        sys.exit(1 if miss else 0)
+        rows = system.doctor_report()
+        bad = 0
+        for r in rows:
+            print(("✓ " if r["ok"] else "✗ ") + r["text"])
+            bad += not r["ok"]
+        print("Môi trường ổn." if not bad else f"Có {bad} mục cần xử lý (xem trên).")
+        sys.exit(1 if bad else 0)
     if args.cmd == "vendor":
         out = Path(__file__).parent / "static" / "vendor"
         out.mkdir(parents=True, exist_ok=True)
@@ -109,6 +107,8 @@ def main(argv: list[str] | None = None) -> None:
 
     host = getattr(args, "host", None) or s.host
     port = getattr(args, "port", None) or s.port
+    if not system.port_free(host, port):
+        print(f"✗ Cổng {host}:{port} đang bận (app khác đang chạy?). Đổi cổng: storyforge-app serve --port {port + 1}")
     app = create_app(s)
     print(f"StoryForge: http://{host}:{port}  |  worker token: {s.worker_token}")
     if report:

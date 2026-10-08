@@ -5,8 +5,8 @@ import random
 
 from helpers import EXAMPLES  # noqa: F401  (đảm bảo sys.path)
 
-from storyforge.app import checks, comic, llm, policy, state as st, validate, video
-from storyforge.app.engine import DEFAULT_SETTINGS, default_focus
+from storyforge.app import checks, comic, llm, policy, state as st, system, validate, video
+from storyforge.app.engine import DEFAULT_SETTINGS, _lang_flags, dedupe_fuzzy_on, dedupe_llm_on, default_focus, settings_of
 from storyforge.app.routes_web import split_chapters
 
 
@@ -145,3 +145,50 @@ def test_settings_validation():
     fixed = validate.fix({"video_width": 1281, "video_height": 721, "comic_max_panels": 40, "beats_span_retries": 9})
     assert fixed == {"video_width": 1282, "video_height": 722, "comic_max_panels": 9, "beats_span_retries": 2}
     assert any(w["key"] == "dedupe_threshold" for w in validate.warnings(both, {**ok, "dedupe_threshold": 0.8}))
+
+
+def test_crop_intersection_box():
+    v = comic.crop_box(1320, 1000, 16 / 9, .5, .35)
+    c = comic.crop_box(1320, 1000, 1.0, .5, .35)
+    inter = comic.intersect(v, c)
+    assert inter is not None and inter[2] > 0 and inter[3] > 0
+    assert inter[0] >= min(v[0], c[0]) - 1e-9 and inter[0] + inter[2] <= max(v[0] + v[2], c[0] + c[2]) + 1e-9
+    far = comic.crop_box(2000, 1000, 1.0, 0.0, .5), comic.crop_box(2000, 1000, 1.0, 1.0, .5)
+    assert comic.intersect(*far) is None, "hai khung chỉ chạm mép thì coi như không giao"
+
+
+def test_stall_thresholds_split_by_kind():
+    from storyforge.app.jobs import DEFAULT_STALL
+    assert DEFAULT_STALL["image.generate"] >= 1200, "ảnh máy yếu cần chờ lâu"
+    assert DEFAULT_STALL["tts.synthesize"] <= 300, "giọng đọc phải thu hồi sớm"
+    assert DEFAULT_STALL["llm.chat"] == 0
+
+
+def test_dedupe_toggles_with_legacy_fallback():
+    assert dedupe_fuzzy_on(settings_of({"settings_json": "{}"}))
+    assert dedupe_llm_on(settings_of({"settings_json": "{}"}))
+    legacy = settings_of({"settings_json": '{"dedupe_mode": "llm_only"}'})
+    assert not dedupe_fuzzy_on(legacy) and dedupe_llm_on(legacy)
+    off = settings_of({"settings_json": '{"dedupe_mode": "off"}'})
+    assert not dedupe_fuzzy_on(off) and not dedupe_llm_on(off)
+
+
+def test_english_allow_list():
+    assert checks.non_english("áo dài đỏ thêu hoa", [])
+    p = {"settings": {"check_english": True, "english_allow": "áo dài đỏ thêu hoa"}}
+    assert _lang_flags(p, ["áo dài đỏ thêu hoa"], []) == []
+    p2 = {"settings": {"check_english": True, "english_allow": ""}}
+    assert _lang_flags(p2, ["áo dài đỏ thêu hoa"], []) == ["non_english_prompt"]
+
+
+def test_doctor_port_check():
+    import socket
+
+    sk = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sk.bind(("127.0.0.1", 0))
+    busy = sk.getsockname()[1]
+    try:
+        assert not system.port_free("127.0.0.1", busy)
+    finally:
+        sk.close()
+    assert system.port_free("127.0.0.1", busy)

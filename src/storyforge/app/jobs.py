@@ -19,8 +19,10 @@ from .db import db, jd, jl, now
 
 log = logging.getLogger("storyforge.jobs")
 
-# Ngưỡng đứng yên (giây). LLM qua API thường không báo tiến độ trong lúc sinh chữ: tắt (0), dựa vào lease.
-DEFAULT_STALL = {"image.generate": 600, "tts.synthesize": 600, "image.remove_bg": 600, "llm.chat": 0}
+# Ngưỡng đứng yên (giây) theo loại job. Ảnh (mflux/diffusers trên máy yếu) có thể
+# không báo tiến độ hàng chục phút mà vẫn sống: cho lâu. Giọng đọc thường xong trong
+# vài phút: cho ngắn để thu hồi sớm. LLM qua API không báo tiến độ: tắt (0), dựa vào lease.
+DEFAULT_STALL = {"image.generate": 1200, "tts.synthesize": 300, "image.remove_bg": 300, "llm.chat": 0}
 STALL_WARN = 120     # giao diện đánh dấu "đứng yên" sau chừng này giây
 
 

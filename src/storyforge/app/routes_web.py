@@ -981,11 +981,12 @@ SETTING_GROUPS = [
         ("beats_span_retries", "Số lần bắt LLM chia nhịp lại khi sai khoảng đoạn (0–2; hết lượt thì tự sửa + gắn cờ)", "int"),
         ("context_chapters", "Số chương tóm tắt đưa vào ngữ cảnh", "int"),
         ("check_english", "Gắn cờ khi mô tả cho model ảnh không phải tiếng Anh", "bool"),
+        ("english_allow", "Từ/cụm tiếng Việt cho phép trong mô tả ảnh (phân tách dấu phẩy)", "text"),
         ("llm_extra", "Hướng dẫn thêm cho LLM", "area"),
     ]),
     ("Gộp trùng", [
-        ("dedupe_mode", "Cách gợi ý gộp trùng",
-         "select:fuzzy=Theo tên gần giống,llm_only=Chỉ khi nhờ LLM rà (truyện nhiều tên trùng),off=Tắt"),
+        ("dedupe_fuzzy", "Tự gợi ý khi tên gần giống", "bool"),
+        ("dedupe_llm", "Hiện nút “Nhờ LLM rà trùng”", "bool"),
         ("dedupe_threshold", "Ngưỡng tên gần giống (0.85–1; mặc định 0.90)", "float"),
     ]),
     ("Ảnh", [

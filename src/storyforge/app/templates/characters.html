@@ -2,9 +2,9 @@
 {% import "_macros.html" as m %}
 {% block content %}
 <div class="bar"><h1>Nhân vật</h1>
-  {% if p.settings.dedupe_mode == 'fuzzy' %}<form method="post" action="/p/{{ p.id }}/dedupe/scan" class="inline"><button class="ghost">Quét tên gần giống</button></form>{% endif %}
-  {% if p.settings.dedupe_mode != 'off' %}<form method="post" action="/p/{{ p.id }}/dedupe/llm" class="inline"><button class="ghost" title="Gửi danh sách cho LLM rà soát biệt danh, cách xưng hô">Nhờ LLM rà trùng</button></form>{% endif %}
-  <span class="muted small">Gợi ý gộp: {{ {'fuzzy':'theo tên gần giống','llm_only':'chỉ khi nhờ LLM','off':'tắt'}[p.settings.dedupe_mode] }} (<a href="/p/{{ p.id }}/settings#g-Gộp trùng">đổi</a>)</span>
+  {% if p.settings.dedupe_fuzzy %}<form method="post" action="/p/{{ p.id }}/dedupe/scan" class="inline"><button class="ghost">Quét tên gần giống</button></form>{% endif %}
+  {% if p.settings.dedupe_llm %}<form method="post" action="/p/{{ p.id }}/dedupe/llm" class="inline"><button class="ghost" title="Gửi danh sách cho LLM rà soát biệt danh, cách xưng hô">Nhờ LLM rà trùng</button></form>{% endif %}
+  <span class="muted small">Gợi ý gộp: {{ 'tên gần giống' if p.settings.dedupe_fuzzy else '' }}{{ ' + ' if p.settings.dedupe_fuzzy and p.settings.dedupe_llm else '' }}{{ 'nhờ LLM' if p.settings.dedupe_llm else '' }}{{ 'tắt' if not p.settings.dedupe_fuzzy and not p.settings.dedupe_llm else '' }} (<a href="/p/{{ p.id }}/settings#g-Gộp trùng">đổi</a>)</span>
   <a href="/p/{{ p.id }}/bible.md" target="_blank">Hồ sơ (.md)</a></div>
 {% set suggestions = suggestions|selectattr('table', 'equalto', 'character')|list %}
 {% include "_suggestions.html" %}

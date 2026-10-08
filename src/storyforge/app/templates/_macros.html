@@ -161,7 +161,7 @@
   <div class="scene-top">
     <div class="img master" style="aspect-ratio: {{ b.img_width or 16 }}/{{ b.img_height or 10 }}">
       {% if b.image_asset_id %}<a href="{{ media(b.image_asset_id) }}" target="_blank"><img src="{{ media(b.image_asset_id) }}" loading="lazy"></a>
-        {% if b.crop.video_box %}{{ crop_overlay(b.crop.video_box, 'v') }}{{ crop_overlay(b.crop.panel_box, 'c') }}{% endif %}
+        {% if b.crop.video_box %}{{ crop_overlay(b.crop.video_box, 'v') }}{{ crop_overlay(b.crop.panel_box, 'c') }}{% if b.crop.inter_box %}{{ crop_overlay(b.crop.inter_box, 'i') }}{% endif %}{% endif %}
       {% else %}<div class="ph">{{ {'missing':'chờ ảnh tham chiếu','generating':'đang tạo...','failed':'lỗi'}.get(b.image_status, b.image_status) }}</div>{% endif %}</div>
     {% if b.image_asset_id and (b.segment or b.panel) %}
     <div class="crops">
@@ -174,7 +174,7 @@
     {% if b.image_locked %}<span class="flag">🔒 khóa</span>{% endif %}
     {% if b.prompt_override %}<span class="flag">prompt tay</span>{% endif %}
     {% if b.stale.stale %}<a href="#" class="flag warnflag" @click.prevent="diff=!diff">ảnh cũ: xem thay đổi</a>{% endif %}
-    {% if b.crop.mismatch %}<span class="flag warnflag" title="Hai khung chỉ trùng {{ (b.crop.overlap*100)|int }}%">khung video và truyện lệch nhau</span>{% endif %}
+    {% if b.crop.mismatch %}<span class="flag warnflag" title="Hai khung chỉ trùng {{ (b.crop.overlap*100)|int }}%. Vùng tím trên ảnh gốc là phần xuất hiện ở cả hai khung — càng nhỏ càng lệch">khung video và truyện lệch nhau</span>{% endif %}
     {% if b.panel and 'text_overflow' in b.panel.flags %}<span class="flag">thoại tràn khung</span>{% endif %}</div>
   <div x-show="diff" x-cloak class="diff small">{% if b.stale.stale %}{% if b.stale.waiting %}<div>Trạng thái đã đổi; đang chờ ảnh tham chiếu mới được tạo / duyệt.</div>{% elif b.stale.refs_changed %}<div>Ảnh tham chiếu đã đổi.</div>{% endif %}{{ b.stale.diff|safe }}{% endif %}</div>
   <div class="side">
