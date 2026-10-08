@@ -1,6 +1,6 @@
 :root{--bg:#f6f6f8;--fg:#1d1d24;--mut:#6b6b78;--card:#fff;--line:#e3e3ea;--acc:#3b5bdb;--ok:#2b8a3e;--no:#c92a2a;--warn:#e67700;--vbox:#1c7ed6;--cbox:#f76707;--ibox:#9775fa}
 *{box-sizing:border-box}[x-cloak]{display:none!important}
-body{margin:0;font:14px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--fg)}
+body{margin:0;font:14px/1.5 sans-serif;background:var(--bg);color:var(--fg)}
 a{color:var(--acc);text-decoration:none}a:hover{text-decoration:underline}
 header.top{display:flex;gap:18px;align-items:center;padding:10px 20px;background:#1d1d24;color:#fff;position:sticky;top:0;z-index:10}
 header.top a{color:#dfe3ff}header.top .brand{font-weight:700;color:#fff}header.top nav{display:flex;gap:14px;flex-wrap:wrap}header.top .right{margin-left:auto}
