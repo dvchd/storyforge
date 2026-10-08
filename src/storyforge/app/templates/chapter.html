@@ -2,36 +2,40 @@
 {% import "_macros.html" as m %}
 {% block content %}
 <div class="bar">
+  {% if nav.prev %}<a href="/p/{{ p.id }}/c/{{ nav.prev }}?tab={{ tab }}">← Chương trước</a>{% endif %}
   <h1>Chương {{ ch.idx }}: {{ ch.title }}</h1>
-  <span class="st st-{{ ch.status }}">{{ STATUS_LABELS.get(ch.status, ch.status) }}</span>
+  {% if nav.nxt %}<a href="/p/{{ p.id }}/c/{{ nav.nxt }}?tab={{ tab }}">Chương sau →</a>{% endif %}
+  {{ m.steps(ch.status) }} <span class="st st-{{ ch.status }}">{{ STATUS_LABELS.get(ch.status, ch.status) }}</span>
   {% if ch.needs_recheck %}<span class="flag">trạng thái chương trước đã đổi, nên trích lại</span>{% endif %}
 </div>
 {% if ch.error %}<div class="banner bad">{{ ch.error }} <form method="post" action="/c/{{ ch.id }}/retry" class="inline"><button>Thử lại</button></form></div>{% endif %}
 <div class="bar">
   {% if ch.status == 'new' %}<form method="post" action="/c/{{ ch.id }}/run" class="inline"><button class="ok">Chạy chương</button></form>{% endif %}
-  <form method="post" action="/c/{{ ch.id }}/reset" class="inline" onsubmit="return confirm('Trích xuất lại trạng thái? Nhịp, ảnh cảnh và khung của chương sẽ bị xóa.')"><input type="hidden" name="to" value="extract"><button class="ghost">Trích trạng thái lại</button></form>
-  <form method="post" action="/c/{{ ch.id }}/reset" class="inline" onsubmit="return confirm('Chia nhịp lại? Ảnh cảnh và khung của chương sẽ bị xóa.')"><input type="hidden" name="to" value="beats"><button class="ghost">Chia nhịp lại</button></form>
+  <details class="inline-menu"><summary class="ghostbtn">Chạy lại…</summary>
+    <form method="post" action="/c/{{ ch.id }}/reset" onsubmit="return confirm('Trích xuất lại trạng thái? Nhịp, khung và ảnh cảnh của chương sẽ bị xóa (ảnh cũ vẫn được dùng lại nếu đầu vào không đổi).')"><input type="hidden" name="to" value="extract"><button class="ghost">Trích trạng thái lại</button></form>
+    <form method="post" action="/c/{{ ch.id }}/reset" onsubmit="return confirm('Chia nhịp lại? Khung và ảnh cảnh của chương sẽ bị xóa.')"><input type="hidden" name="to" value="beats"><button class="ghost">Chia nhịp lại</button></form>
+  </details>
   {% if stale %}<form method="post" action="/c/{{ ch.id }}/regen-stale" class="inline"><button>Tạo lại {{ stale }} ảnh cũ</button></form>{% endif %}
   {% if ch.status == 'done' %}<form method="post" action="/c/{{ ch.id }}/publish" class="inline"><button class="ok">Xuất bản (dựng video / ghép trang)</button></form>{% endif %}
   {% if p.mode in ('video','both') %}<a href="/p/{{ p.id }}/c/{{ ch.id }}/preview/video">▶ Xem trước video</a>{% endif %}
-  {% if p.mode in ('comic','both') %}<a href="/p/{{ p.id }}/c/{{ ch.id }}/preview/comic">▤ Xem trước truyện tranh</a>{% endif %}
+  {% if p.mode in ('comic','both') %}<a href="/p/{{ p.id }}/c/{{ ch.id }}/preview/comic">▤ Xem trước truyện</a>{% endif %}
   {% if ch.video_asset_id %}<a href="{{ media(ch.video_asset_id) }}?download=1">Tải MP4</a>{% endif %}
   {% if ch.srt_asset_id %}<a href="{{ media(ch.srt_asset_id) }}?download=1">Tải SRT</a>{% endif %}
   {% if ch.comic_cbz_asset_id %}<a href="{{ media(ch.comic_cbz_asset_id) }}?download=1">Tải CBZ</a>{% endif %}
   {% if ch.comic_pdf_asset_id %}<a href="{{ media(ch.comic_pdf_asset_id) }}?download=1">Tải PDF</a>{% endif %}
   <form method="post" action="/c/{{ ch.id }}/policy" class="inline">
-    <select name="level" onchange="this.form.submit()">
+    <select name="level" onchange="this.form.submit()" title="Đặt cấp riêng cho chương. Các ghi đè cổng của dự án vẫn được giữ.">
       <option value="">Cấp duyệt: theo dự án</option>
       {% for k, v in LEVELS.items() %}<option value="{{ k }}" {% if cpol.get('level')==k %}selected{% endif %}>Chương này: {{ v.label }}</option>{% endfor %}
     </select></form>
 </div>
 
-<div class="tabs" x-data="{t: '{{ 'prod' if ch.status in ('producing','done') else ('beats' if ch.status in ('review_beats','beating') else 'state') }}'}">
+<div class="tabs" x-data="{t: '{{ tab }}'}">
   <nav>
     <a href="#" :class="t=='text'&&'on'" @click.prevent="t='text'">Văn bản ({{ paras|length }} đoạn)</a>
     <a href="#" :class="t=='state'&&'on'" @click.prevent="t='state'">Trạng thái ({{ events|length }})</a>
     <a href="#" :class="t=='beats'&&'on'" @click.prevent="t='beats'">Nhịp ({{ beats|length }})</a>
-    <a href="#" :class="t=='prod'&&'on'" @click.prevent="t='prod'">Sản xuất</a>
+    <a href="#" :class="t=='prod'&&'on'" @click.prevent="t='prod'">Sản xuất {% if progress.images %}({{ progress.pct }}%){% endif %}</a>
     <a href="#" :class="t=='jobs'&&'on'" @click.prevent="t='jobs'">Job</a>
   </nav>
 
@@ -40,20 +44,24 @@
     <details><summary>Sửa văn bản chương</summary>
       <form method="post" action="/c/{{ ch.id }}/edit" class="stack"><input name="title" value="{{ ch.title }}">
         <textarea name="text" rows="20">{{ ch.text }}</textarea><button>Lưu</button></form></details>
-    <ol class="paras">{% for para in paras %}<li>{{ para }}</li>{% endfor %}</ol>
+    <ol class="paras">{% for para in paras %}<li id="para-{{ loop.index }}">{{ para }}</li>{% endfor %}</ol>
   </section>
 
-  <section x-show="t=='state'" x-cloak>
+  <section x-show="t=='state'" x-cloak class="kbd-scope">
     {% if new_chars or new_locs %}<h3>Mới xuất hiện</h3>
       {% for c in new_chars %}{{ m.character_row(c) }}{% endfor %}
       {% for l in new_locs %}{{ m.location_row(l) }}{% endfor %}{% endif %}
-    <h3>Sự kiện trạng thái</h3>
-    <form method="post" action="/p/{{ p.id }}/review/bulk" class="inline"><input type="hidden" name="entity" value="event"><input type="hidden" name="chapter_id" value="{{ ch.id }}"><button class="ok">Duyệt tất cả sự kiện chờ</button></form>
+    <div class="bar"><h3>Sự kiện trạng thái</h3>
+      <form method="post" action="/p/{{ p.id }}/review/bulk" class="inline"><input type="hidden" name="entity" value="event"><input type="hidden" name="chapter_id" value="{{ ch.id }}"><button class="ok">Duyệt tất cả sự kiện chờ</button></form></div>
     {% for e in events %}{{ m.event_row(e) }}{% else %}<p class="muted">Không có thay đổi.</p>{% endfor %}
     <details class="card"><summary>Thêm sự kiện thủ công</summary>
-      <form method="post" action="/c/{{ ch.id }}/event/new" class="grid4">
-        <label>Nhân vật <select name="character_id">{% for s in states %}<option value="{{ s.c.id }}">{{ s.c.name }}</option>{% endfor %}</select></label>
-        <label>Trường <select name="field">{% for f in FIELDS %}<option value="{{ f }}">{{ FIELD_LABELS[f] }}</option>{% endfor %}</select></label>
+      <form method="post" action="/c/{{ ch.id }}/event/new" class="grid4" x-data="{subj: 'character'}">
+        <label>Đối tượng <select name="subject" @change="subj=$event.target.value.split(':')[0]">
+          <optgroup label="Nhân vật">{% for c in all_chars %}<option value="character:{{ c.id }}">{{ c.name }}</option>{% endfor %}</optgroup>
+          <optgroup label="Bối cảnh">{% for l in all_locs %}<option value="location:{{ l.id }}">{{ l.name }}</option>{% endfor %}</optgroup></select></label>
+        <label>Trường
+          <select name="field" x-show="subj=='character'">{% for f in FIELDS %}<option value="{{ f }}">{{ FIELD_LABELS[f] }}</option>{% endfor %}</select>
+          <select name="field" x-show="subj=='location'" :disabled="subj!='location'">{% for f in LOC_FIELDS %}<option value="{{ f }}">{{ LOC_FIELD_LABELS[f] }}</option>{% endfor %}</select></label>
         <label>Giá trị (tiếng Anh) <input name="value"></label>
         <label>Đến chương <input name="until_chapter"></label>
         <label><input type="checkbox" name="permanent"> Vĩnh viễn</label>
@@ -62,21 +70,27 @@
     <h3>Trạng thái tại chương này</h3>
     <table class="tbl small"><tr><th>Nhân vật</th>{% for f in FIELDS %}<th>{{ FIELD_LABELS[f] }}</th>{% endfor %}</tr>
       {% for s in states %}<tr><td><a href="/p/{{ p.id }}/characters/{{ s.c.id }}">{{ s.c.name }}</a></td>{% for f in FIELDS %}<td>{{ s.state.get(f, '') }}</td>{% endfor %}</tr>{% endfor %}</table>
+    {% if loc_states %}<table class="tbl small"><tr><th>Bối cảnh</th>{% for f in LOC_FIELDS %}<th>{{ LOC_FIELD_LABELS[f] }}</th>{% endfor %}</tr>
+      {% for s in loc_states %}<tr><td><a href="/p/{{ p.id }}/locations/{{ s.l.id }}">{{ s.l.name }}</a></td>{% for f in LOC_FIELDS %}<td>{{ s.state.get(f, '') }}</td>{% endfor %}</tr>{% endfor %}</table>{% endif %}
   </section>
 
-  <section x-show="t=='beats'" x-cloak>
+  <section x-show="t=='beats'" x-cloak class="kbd-scope">
     <form method="post" action="/p/{{ p.id }}/review/bulk" class="inline"><input type="hidden" name="entity" value="beat"><input type="hidden" name="chapter_id" value="{{ ch.id }}"><button class="ok">Duyệt tất cả nhịp chờ</button></form>
     {% for b in beats %}{{ m.beat_row(b) }}{% else %}<p class="muted">Chưa chia nhịp.</p>{% endfor %}
   </section>
 
-  <section x-show="t=='prod'" x-cloak>
-    <p class="muted">Ảnh {{ progress.images_ok }}/{{ progress.images }} · Giọng {{ progress.audio_ok }}/{{ progress.audio }} · Khung {{ progress.panels_ok }}/{{ progress.panels }}</p>
-    {% if segments %}<h3>Cảnh video</h3><div class="gallery">{% for s in segments %}{{ m.segment_card(s) }}{% endfor %}</div>{% endif %}
-    {% if panels %}<h3>Khung truyện tranh</h3><div class="gallery">{% for s in panels %}{{ m.panel_card(s) }}{% endfor %}</div>{% endif %}
+  <section x-show="t=='prod'" x-cloak class="kbd-scope">
+    {% if progress.images %}{{ m.progress(progress.pct, 'Ảnh ' ~ progress.images_ok ~ '/' ~ progress.images ~ ' · Giọng ' ~ progress.audio_ok ~ '/' ~ progress.audio) }}{% endif %}
+    <p class="muted small">Mỗi nhịp có MỘT ảnh gốc, dùng chung cho video và truyện tranh. Chọn điểm lấy nét để cắt khung phù hợp.</p>
+    <div class="bar">
+      <form method="post" action="/p/{{ p.id }}/review/bulk" class="inline"><input type="hidden" name="entity" value="beat_image"><input type="hidden" name="chapter_id" value="{{ ch.id }}"><button class="ok">Duyệt tất cả ảnh chờ</button></form>
+      {% if p.mode in ('video','both') %}<form method="post" action="/p/{{ p.id }}/review/bulk" class="inline"><input type="hidden" name="entity" value="segment_audio"><input type="hidden" name="chapter_id" value="{{ ch.id }}"><button class="ok">Duyệt tất cả giọng chờ</button></form>{% endif %}
+    </div>
+    <div class="gallery wide">{% for s in scenes %}{{ m.scene_card(s) }}{% else %}<p class="muted">Chưa có nhịp được duyệt.</p>{% endfor %}</div>
   </section>
 
   <section x-show="t=='jobs'" x-cloak>
-    <table class="tbl small">{% for j in chjobs %}<tr><td><a href="/job/{{ j.id }}">#{{ j.id }}</a></td><td>{{ j.kind }}</td><td>{{ j.owner_type }}</td><td>{{ j.status }}</td><td>{{ j.attempts }}</td><td class="err">{{ j.error[:200] }}</td></tr>{% endfor %}</table>
+    <table class="tbl small">{% for j in chjobs %}<tr class="j-{{ j.status }}"><td><a href="/job/{{ j.id }}">#{{ j.id }}</a></td><td>{{ j.kind }}</td><td>{{ j.owner_type }}:{{ j.owner_id }}</td><td>{{ j.status }}</td><td>{{ j.attempts }}/{{ j.max_attempts }}</td><td>{{ j.elapsed|secs }}</td><td class="err">{{ j.error[:200] }}</td></tr>{% else %}<tr><td class="muted">Chưa có job.</td></tr>{% endfor %}</table>
   </section>
 </div>
 {% endblock %}

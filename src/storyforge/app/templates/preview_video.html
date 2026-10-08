@@ -1,22 +1,25 @@
 {% extends "base.html" %}
 {% block content %}
-<div class="bar"><h1>Xem trước video: chương {{ ch.idx }}</h1><a href="/p/{{ p.id }}/c/{{ ch.id }}">← Về chương</a>
-<span class="muted">Trình duyệt tự phát nối audio và đổi ảnh, chưa cần dựng video.</span></div>
-<div x-data="videoPlayer({{ segs_json }})" class="player">
-  <div class="stage" @click="toggle()">
+<div class="bar"><h1>Xem trước video: chương {{ ch.idx }}</h1><a href="/p/{{ p.id }}/c/{{ ch.id }}?tab=prod">← Về chương</a>
+<span class="muted">Trình duyệt tự phát nối audio và đổi ảnh, chưa cần dựng video. Phím: <kbd>Space</kbd> phát/dừng, <kbd>←</kbd>/<kbd>→</kbd> đoạn trước/sau.</span></div>
+<div x-data="videoPlayer({{ segs_json }})" class="player" @keydown.window="key($event)">
+  <div class="stage" style="aspect-ratio: {{ aspect }}" @click="toggle()">
     <template x-for="(s, k) in segs" :key="s.id">
-      <img x-show="k===i" :src="s.image || ''" :class="playing && k===i ? 'kb on' : 'kb'" :style="`animation-duration:${cur.duration}s`">
+      <img x-show="k===i && s.image" :src="s.image || ''" :class="'kb m-' + s.motion + (playing && k===i ? ' on' : '')"
+           :style="`object-position:${s.fx*100}% ${s.fy*100}%; animation-duration:${s.duration}s`">
     </template>
-    <div class="noimg" x-show="!cur.image">Chưa có ảnh</div>
+    <div class="noimg" x-show="!cur.image"><div>Đang chờ ảnh cảnh<br><small x-text="'trạng thái: ' + cur.image_status"></small></div></div>
     <p class="caption" x-show="subs" x-text="cur.text"></p>
+    <div class="badge-audio" x-show="!cur.audio">chưa có giọng đọc · tự chuyển sau <span x-text="cur.duration.toFixed(1)"></span>s</div>
   </div>
-  <audio x-ref="a" :src="cur.audio" @ended="next()" @timeupdate="t=$refs.a.currentTime"></audio>
+  <audio x-ref="a" :src="cur.audio" @ended="next()"></audio>
   <div class="controls">
     <button @click="prev()">⏮</button><button @click="toggle()" x-text="playing ? '⏸' : '▶'"></button><button @click="next()">⏭</button>
     <span x-text="`${i+1}/${segs.length}`"></span>
     <label><input type="checkbox" x-model="subs"> Phụ đề</label>
     <input type="range" min="0" :max="segs.length-1" x-model.number="i" @change="jump(i)">
+    <a :href="`/p/{{ p.id }}/c/{{ ch.id }}?tab=prod`" class="small">Sửa cảnh này</a>
   </div>
-  <ol class="seglist"><template x-for="(s, k) in segs" :key="s.id"><li :class="k===i && 'on'" @click="jump(k)" x-text="s.text.slice(0,120)"></li></template></ol>
+  <ol class="seglist"><template x-for="(s, k) in segs" :key="s.id"><li :class="(k===i ? 'on ' : '') + (!s.image ? 'missing' : '')" @click="jump(k)" x-text="s.text.slice(0,120)"></li></template></ol>
 </div>
 {% endblock %}

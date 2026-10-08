@@ -1,1 +1,1 @@
-"""Ung dung quan ly: du lieu, quy trinh, cong duyet, giao dien web, API cho worker."""
+"""Ứng dụng quản lý: dữ liệu, quy trình, cổng duyệt, giao diện web, API cho worker."""

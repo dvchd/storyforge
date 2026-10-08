@@ -1,9 +1,10 @@
 {% extends "base.html" %}
 {% block content %}
 <div class="bar"><h1>Hàng đợi</h1>
-  {% for s, l in [('', 'Tất cả'), ('queued','Chờ'), ('running','Đang chạy'), ('failed','Lỗi'), ('done','Xong')] %}
-  <a href="?status={{ s }}" class="{{ 'on' if status==s else '' }}">{{ l }}</a>{% endfor %}</div>
-<div hx-get="/p/{{ p.id }}/jobs/table?status={{ status }}" hx-trigger="every 3s" hx-swap="innerHTML">
+  {% for s, lb in [('', 'Tất cả'), ('queued','Chờ'), ('running','Đang chạy'), ('failed','Lỗi'), ('cancelled','Đã hủy'), ('done','Xong')] %}
+  <a href="?status={{ s }}" class="{{ 'on' if status==s else '' }}">{{ lb }}</a>{% endfor %}
+  {% if jobcounts.get('failed') %}<form method="post" action="/p/{{ p.id }}/jobs/retry-failed" class="inline"><button class="ghost">Chạy lại tất cả job lỗi</button></form>{% endif %}</div>
+<div hx-get="/p/{{ p.id }}/jobs/table?status={{ status }}" hx-trigger="every 3s [document.visibilityState=='visible']" hx-swap="innerHTML">
   {% include "partials/jobs_table.html" %}
 </div>
 {% endblock %}

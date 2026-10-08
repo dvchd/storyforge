@@ -1,17 +1,20 @@
 {% extends "base.html" %}
 {% block content %}
 <h1>Worker</h1>
-<p class="muted">{% for k, v in jobcounts.items() %}{{ k }}: {{ v }} · {% endfor %}</p>
+{% if missing %}<div class="banner bad">Đang có việc chờ nhưng chưa có worker nào nhận: <b>{{ missing|join(', ') }}</b></div>{% endif %}
 <table class="tbl"><tr><th>ID</th><th>Tên</th><th>Năng lực</th><th>Model đang tải</th><th>Model có</th><th>Job xong</th><th>Lần cuối</th></tr>
 {% for w in workers %}<tr><td>{{ w.id }}</td><td>{{ w.name }}</td><td>{{ (w.capabilities_json|fromjson)|join(', ') }}</td>
 <td>{{ (w.loaded_json|fromjson)|join(', ') }}</td><td class="small">{{ (w.models_json|fromjson)|join(', ') }}</td><td>{{ w.jobs_done }}</td>
-<td>{{ w.last_seen|dt }} {% if now - (w.last_seen or 0) < 30 %}<span class="pill ok">online</span>{% endif %}</td></tr>
+<td>{{ w.last_seen|dt }} {% if now - (w.last_seen or 0) < 60 %}<span class="pill ok">online</span>{% endif %}</td></tr>
 {% else %}<tr><td colspan="7" class="muted">Chưa có worker nào kết nối.</td></tr>{% endfor %}</table>
+{% if stats %}<h3>Thời gian trung bình</h3><table class="tbl small"><tr><th>Loại</th><th>Trung bình</th><th>Còn chờ</th><th>Ước tính</th></tr>
+{% for k, v in stats.items() %}<tr><td>{{ k }}</td><td>{{ v.avg|secs }}</td><td>{{ v.pending }}</td><td>{{ v.eta|secs }}</td></tr>{% endfor %}</table>{% endif %}
 <section class="card">
 <h3>Kết nối worker</h3>
 <p>Địa chỉ app: <code>{{ base_url }}</code><br>Worker token: <code>{{ token }}</code></p>
 <pre class="code">storyforge-worker --config worker.toml
-# hoặc thử ngay với worker giả lập:
+# thử ngay với worker giả lập:
 storyforge-worker --server {{ base_url }} --token {{ token }} --mock</pre>
+<p class="muted small">Mẫu cấu hình: configs/worker.mac.toml (Mac Apple Silicon), configs/worker.cuda.toml (NVIDIA). Hướng dẫn chi tiết: docs/worker.md.</p>
 </section>
 {% endblock %}

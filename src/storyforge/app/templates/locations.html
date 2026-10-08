@@ -1,11 +1,15 @@
 {% extends "base.html" %}
 {% import "_macros.html" as m %}
 {% block content %}
-<h1>Bối cảnh</h1>
-{% for l in locs %}{{ m.location_row(l) }}{% else %}<p class="muted">Chưa có bối cảnh.</p>{% endfor %}
+<div class="bar"><h1>Bối cảnh</h1>
+  <form method="post" action="/p/{{ p.id }}/dedupe/scan" class="inline"><button class="ghost">Quét tên gần giống</button></form></div>
+<p class="muted small">Một bối cảnh có nhiều ảnh tham chiếu theo biến thể của từng nhịp (ngày, đêm, mưa...) và theo hiện trạng qua các chương (bị phá hủy, trang trí...).</p>
+{% set suggestions = suggestions|selectattr('table', 'equalto', 'location')|list %}
+{% include "_suggestions.html" %}
+<div class="kbd-scope">{% for l in locs %}{{ m.location_row(l) }}{% else %}<p class="muted">Chưa có bối cảnh.</p>{% endfor %}</div>
 <details class="card"><summary>Thêm bối cảnh</summary>
   <form method="post" action="/p/{{ p.id }}/locations/new" class="stack">
-    <label>Tên <input name="name" required></label><label>Biến thể <input name="variant" value="default"></label>
+    <label>Tên <input name="name" required></label><label>Tên gọi khác <input name="aliases"></label>
     <label>Mô tả (tiếng Anh) <textarea name="description" rows="2"></textarea></label>
     <label>Từ chương <input name="first_chapter" type="number" value="1"></label><button>Thêm</button></form></details>
 {% endblock %}

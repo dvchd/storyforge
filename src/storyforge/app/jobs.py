@@ -1,8 +1,9 @@
-"""Hang doi job tren SQLite.
+"""Hàng đợi job trên SQLite.
 
-App chi tao job va xu ly ket qua; worker nhan job qua HTTP. Nhan job dung mot
-cau UPDATE ... RETURNING nen an toan khi co nhieu worker cung luc. Job het han
-thue (lease) ma khong co heartbeat se tu quay lai hang doi.
+- Nhận job bằng một câu UPDATE ... RETURNING: an toàn khi nhiều worker.
+- Ưu tiên hiệu lực = priority + điểm chờ (job chờ lâu được cộng dần, chống bị bỏ đói),
+  sau đó ưu tiên job dùng model worker đang tải sẵn để tránh đổi model liên tục.
+- Mỗi loại job có thời gian thuê riêng; hết hạn mà không có heartbeat thì job tự quay lại hàng đợi.
 """
 from __future__ import annotations
 
@@ -10,10 +11,16 @@ import logging
 import shutil
 from typing import Any
 
+from storyforge.protocol import DEFAULT_LEASE
+
 from .config import get_settings
 from .db import db, jd, jl, now
 
 log = logging.getLogger("storyforge.jobs")
+
+
+def lease_for(kind: str) -> int:
+    return int((get_settings().lease or {}).get(kind) or DEFAULT_LEASE.get(kind, 600))
 
 
 def enqueue(project_id: int | None, kind: str, payload: dict, owner_type: str, owner_id: int,
@@ -25,38 +32,53 @@ def enqueue(project_id: int | None, kind: str, payload: dict, owner_type: str, o
         return existing["id"]
     return db.insert("job", project_id=project_id, kind=kind, payload_json=jd(payload), model_hint=model_hint or "",
                      priority=priority, status="queued", max_attempts=max_attempts, owner_type=owner_type,
-                     owner_id=owner_id, input_hash=input_hash, created_at=now())
+                     owner_id=owner_id, input_hash=input_hash, lease_seconds=lease_for(kind), created_at=now())
 
 
-def claim(worker_id: str, caps: list[str], loaded: list[str], lease: int | None = None) -> dict | None:
+def _eff_priority_sql() -> str:
+    s = get_settings()
+    return (f"(priority + MIN({int(s.aging_cap)}, "
+            f"CAST((:now - COALESCE(created_at, :now)) / {max(1, int(s.aging_seconds))} AS INTEGER)))")
+
+
+def claim(worker_id: str, caps: list[str], loaded: list[str]) -> dict | None:
     if not caps:
         return None
-    lease = lease or get_settings().lease_seconds
     t = now()
-    cq = ",".join("?" * len(caps))
-    lq = ",".join("?" * len(loaded)) if loaded else "''"
+    params: dict[str, Any] = {"w": worker_id, "now": t}
+    cq = ",".join(f":c{i}" for i in range(len(caps)))
+    params.update({f"c{i}": c for i, c in enumerate(caps)})
+    if loaded:
+        lq = ",".join(f":l{i}" for i in range(len(loaded)))
+        params.update({f"l{i}": m for i, m in enumerate(loaded)})
+    else:
+        lq = "''"
     sql = f"""
-    UPDATE job SET status='running', worker_id=?, attempts=attempts+1, lease_until=?, started_at=?
+    UPDATE job SET status='running', worker_id=:w, attempts=attempts+1, lease_until=:now + lease_seconds,
+                   started_at=:now, progress=NULL, progress_msg=''
     WHERE id = (
       SELECT id FROM job
       WHERE kind IN ({cq})
-        AND (status='queued' OR (status='running' AND lease_until < ?))
+        AND (status='queued' OR (status='running' AND lease_until < :now))
         AND cancel_requested=0
-      ORDER BY priority DESC, (model_hint IN ({lq})) DESC, id
+      ORDER BY {_eff_priority_sql()} DESC, (model_hint IN ({lq})) DESC, id
       LIMIT 1)
     RETURNING *"""
-    params: list[Any] = [worker_id, t + lease, t, *caps, t, *loaded]
     with db.tx() as c:
         row = c.execute(sql, params).fetchone()
     return dict(row) if row else None
 
 
-def heartbeat(job_id: int, worker_id: str, lease: int | None = None) -> dict:
-    lease = lease or get_settings().lease_seconds
+def heartbeat(job_id: int, worker_id: str, progress: float | None = None, message: str = "") -> dict:
     j = db.get("job", job_id)
     if not j or j["worker_id"] != worker_id or j["status"] != "running":
         return {"ok": False, "cancel": True}
-    db.update("job", job_id, lease_until=now() + lease)
+    cols: dict[str, Any] = {"lease_until": now() + j["lease_seconds"]}
+    if progress is not None:
+        cols["progress"] = max(0.0, min(1.0, float(progress)))
+    if message:
+        cols["progress_msg"] = message[:200]
+    db.update("job", job_id, **cols)
     return {"ok": True, "cancel": bool(j["cancel_requested"])}
 
 
@@ -67,55 +89,74 @@ def artifact_dir(job_id: int):
 
 
 def complete(job_id: int, output: dict, model_id: str = "", elapsed: float = 0.0) -> None:
-    from . import engine  # tranh vong import
+    from . import engine
 
     j = db.get("job", job_id)
     if not j or j["status"] not in ("running", "queued"):
         return
-    db.update("job", job_id, status="done", output_json=jd(output), model_id=model_id or "",
-              finished_at=now(), elapsed=elapsed, error="")
+    usage = output.get("usage") or {}
+    db.update("job", job_id, status="done", output_json=jd(output), model_id=model_id or "", progress=1.0,
+              finished_at=now(), elapsed=elapsed, error="",
+              tokens_in=int(usage.get("prompt_tokens") or 0), tokens_out=int(usage.get("completion_tokens") or 0))
     j = db.get("job", job_id)
     try:
         engine.handle_job_done(j, output)
-    except Exception as e:  # loi xu ly ket qua khong duoc lam treo hang doi
-        log.exception("Xu ly ket qua job %s loi", job_id)
+    except Exception as e:  # lỗi xử lý kết quả không được làm treo hàng đợi
+        log.exception("Xử lý kết quả job %s lỗi", job_id)
         db.update("job", job_id, status="failed", error=f"handler: {e}")
         engine.handle_job_failed(db.get("job", job_id))
     finally:
         shutil.rmtree(artifact_dir(job_id), ignore_errors=True)
 
 
-def fail(job_id: int, error: str, retryable: bool = True) -> None:
+def fail(job_id: int, error: str, retryable: bool = True, cancelled: bool = False) -> None:
     from . import engine
 
     j = db.get("job", job_id)
     if not j:
         return
-    if retryable and j["attempts"] < j["max_attempts"] and not j["cancel_requested"]:
+    if cancelled or j["cancel_requested"]:
+        db.update("job", job_id, status="cancelled", error=error[:4000] or "đã hủy", finished_at=now())
+        engine.handle_job_failed(db.get("job", job_id))
+        return
+    if retryable and j["attempts"] < j["max_attempts"]:
         db.update("job", job_id, status="queued", worker_id="", lease_until=None, error=error[:4000])
         return
     db.update("job", job_id, status="failed", error=error[:4000], finished_at=now())
     engine.handle_job_failed(db.get("job", job_id))
 
 
-def retry_with_feedback(job: dict, bad_text: str, error: str) -> bool:
-    """LLM tra sai schema: dua loi vao hoi thoai va cho chay lai."""
+def retry_with_feedback(job: dict, bad_text: str, error: str, fallback_model: str = "") -> bool:
+    """LLM trả sai: dựng lại hội thoại = prompt gốc + câu trả lời sai GẦN NHẤT + lời nhắc sửa.
+
+    Không nối dồn qua các lần thử (tránh phình token), tăng nhẹ temperature,
+    lần thử cuối chuyển sang model dự phòng nếu có.
+    """
     if job["attempts"] >= job["max_attempts"]:
         return False
     payload = jl(job["payload_json"], {})
-    msgs = payload.get("messages", [])
-    msgs = msgs + [
-        {"role": "assistant", "content": (bad_text or "")[:6000]},
-        {"role": "user", "content": f"Kết quả không hợp lệ: {error[:1500]}\nHãy trả lại đúng MỘT đối tượng JSON theo schema, không thêm chữ nào khác."},
+    meta = payload.setdefault("meta", {})
+    base_n = int(meta.get("base_messages", 2))
+    base_t = float(meta.setdefault("base_temperature", payload.get("temperature", 0.2)))
+    msgs = payload.get("messages", [])[:base_n]
+    msgs += [
+        {"role": "assistant", "content": (bad_text or "")[:2500]},
+        {"role": "user", "content": f"Kết quả trên không hợp lệ:\n{error[:1500]}\n"
+                                    "Hãy trả lại đúng MỘT đối tượng JSON theo schema, sửa các lỗi trên, không thêm chữ nào khác."},
     ]
     payload["messages"] = msgs
-    db.update("job", job["id"], status="queued", worker_id="", lease_until=None, payload_json=jd(payload),
-              error=f"retry: {error[:500]}")
+    payload["temperature"] = round(min(0.7, base_t + 0.15 * job["attempts"]), 2)
+    cols: dict[str, Any] = {"status": "queued", "worker_id": "", "lease_until": None, "payload_json": jd(payload),
+                            "error": f"thử lại: {error[:500]}"}
+    if fallback_model and job["attempts"] + 1 >= job["max_attempts"]:
+        cols["model_hint"] = fallback_model
+    db.update("job", job["id"], **cols)
     return True
 
 
 def retry(job_id: int) -> None:
-    db.update("job", job_id, status="queued", attempts=0, worker_id="", lease_until=None, cancel_requested=0, error="")
+    db.update("job", job_id, status="queued", attempts=0, worker_id="", lease_until=None, cancel_requested=0,
+              error="", progress=None, created_at=now())
 
 
 def cancel(job_id: int) -> None:
@@ -123,7 +164,10 @@ def cancel(job_id: int) -> None:
     if not j:
         return
     if j["status"] == "queued":
+        from . import engine
+
         db.update("job", job_id, status="cancelled", finished_at=now())
+        engine.handle_job_failed(db.get("job", job_id))
     elif j["status"] == "running":
         db.update("job", job_id, cancel_requested=1)
 
@@ -141,3 +185,58 @@ def counts(project_id: int | None = None) -> dict[str, int]:
     else:
         rows = db.q("SELECT status, COUNT(*) n FROM job WHERE project_id=? GROUP BY status", project_id)
     return {r["status"]: r["n"] for r in rows}
+
+
+def online_capabilities(window: float = 60.0) -> set[str]:
+    caps: set[str] = set()
+    for w in db.q("SELECT capabilities_json FROM worker WHERE last_seen > ?", now() - window):
+        caps.update(jl(w["capabilities_json"], []))
+    return caps
+
+
+def missing_workers(project_id: int | None = None) -> list[str]:
+    """Loại job AI đang chờ mà không có worker nào online nhận được."""
+    sql = "SELECT DISTINCT kind FROM job WHERE status='queued' AND kind NOT LIKE 'local.%'"
+    args: list[Any] = []
+    if project_id is not None:
+        sql += " AND project_id=?"
+        args.append(project_id)
+    kinds = {r["kind"] for r in db.q(sql, *args)}
+    return sorted(kinds - online_capabilities())
+
+
+def stats(project_id: int | None = None) -> dict:
+    """Thời gian trung bình theo loại job (50 job gần nhất) và ước tính thời gian còn lại."""
+    where, args = ("WHERE project_id=?", [project_id]) if project_id is not None else ("", [])
+    kinds = [r["kind"] for r in db.q(f"SELECT DISTINCT kind FROM job {where}", *args)]
+    out = {}
+    for k in kinds:
+        a = [project_id, k] if project_id is not None else [k]
+        w = "WHERE project_id=? AND kind=?" if project_id is not None else "WHERE kind=?"
+        done = db.q(f"SELECT elapsed FROM job {w} AND status='done' ORDER BY id DESC LIMIT 50", *a)
+        avg = sum(d["elapsed"] for d in done) / len(done) if done else 0.0
+        queued = db.val(f"SELECT COUNT(*) FROM job {w} AND status IN ('queued','running')", *a) or 0
+        tok = db.one(f"SELECT SUM(tokens_in) i, SUM(tokens_out) o FROM job {w}", *a)
+        out[k] = {"avg": avg, "pending": queued, "eta": avg * queued, "done": len(done),
+                  "tokens_in": tok["i"] or 0, "tokens_out": tok["o"] or 0}
+    return out
+
+
+def queue_positions(rows: list[dict]) -> dict[int, int]:
+    """Vị trí ước tính trong hàng đợi (theo cùng thứ tự claim, trong từng loại job)."""
+    s = get_settings()
+    t = now()
+    queued = db.q("SELECT id, kind, priority, created_at FROM job WHERE status='queued'")
+
+    def eff(j: dict) -> float:
+        return j["priority"] + min(s.aging_cap, int((t - (j["created_at"] or t)) / max(1, s.aging_seconds)))
+
+    pos: dict[int, int] = {}
+    by_kind: dict[str, list[dict]] = {}
+    for j in queued:
+        by_kind.setdefault(j["kind"], []).append(j)
+    for lst in by_kind.values():
+        lst.sort(key=lambda j: (-eff(j), j["id"]))
+        for i, j in enumerate(lst, 1):
+            pos[j["id"]] = i
+    return {r["id"]: pos[r["id"]] for r in rows if r["id"] in pos}

@@ -8,60 +8,76 @@
 
 {% macro buttons(entity, id, status) -%}
 <span class="actions">
-  {% if status != 'approved' %}<button class="ok" hx-post="/review/{{ entity }}/{{ id }}/approve" hx-target="closest .row" hx-swap="outerHTML">Duyệt</button>{% endif %}
-  {% if status != 'rejected' %}<button class="no" hx-post="/review/{{ entity }}/{{ id }}/reject" hx-target="closest .row" hx-swap="outerHTML">Từ chối</button>{% endif %}
+  {% if status != 'approved' %}<button class="ok" data-key="a" hx-post="/review/{{ entity }}/{{ id }}/approve" hx-target="closest .row" hx-swap="outerHTML">Duyệt</button>{% endif %}
+  {% if status not in ('rejected','missing','generating') %}<button class="no" data-key="r" hx-post="/review/{{ entity }}/{{ id }}/reject" hx-target="closest .row" hx-swap="outerHTML">Từ chối</button>{% endif %}
   {% if status in ('approved','rejected') %}<button class="ghost" hx-post="/review/{{ entity }}/{{ id }}/reopen" hx-target="closest .row" hx-swap="outerHTML">Mở lại</button>{% endif %}
 </span>
 {%- endmacro %}
 
+{% macro progress(pct, label='') -%}
+<div class="prog" title="{{ label }}"><div style="width: {{ pct }}%"></div><span>{{ label or (pct ~ '%') }}</span></div>
+{%- endmacro %}
+
+{% macro steps(status) -%}
+{% set r = rank(status) %}
+<span class="steps">
+  <span class="{{ 'done' if r >= rank('state_ready') else ('now' if r >= rank('extracting') else '') }}">Trạng thái</span>
+  <span class="{{ 'done' if r >= rank('producing') else ('now' if r >= rank('beating') else '') }}">Nhịp</span>
+  <span class="{{ 'done' if r >= rank('done') else ('now' if r >= rank('producing') else '') }}">Sản xuất</span>
+</span>
+{%- endmacro %}
+
 {% macro character_row(c) -%}
-<div class="row card char" x-data="{edit:false}">
+<div class="row card char" x-data="{edit:false}" tabindex="0">
   <div class="thumb">{% if c.face_asset %}<img src="{{ media(c.face_asset) }}" loading="lazy">{% else %}<div class="ph">?</div>{% endif %}</div>
   <div class="grow">
     <div class="head"><a href="/p/{{ c.project_id }}/characters/{{ c.id }}"><b>{{ c.name }}</b></a>
       {% if c.aliases %}<small>({{ c.aliases|join(', ') }})</small>{% endif %}
-      {{ badge(c.status) }} <small>từ chương {{ c.first_chapter }}</small> {{ flags(c._flags) }}</div>
+      {{ badge(c.status) }} <small>từ chương {{ c.first_chapter }}</small> {{ flags(c._flags) }} <small class="muted">#{{ c.id }}</small></div>
     <div class="muted">{{ c.role }}</div>
-    <div>{{ c.appearance or '(chưa có mô tả ngoại hình)' }}</div>
+    <div>{{ c.appearance or '(chưa có mô tả ngoại hình — nên bổ sung trước khi tạo ảnh)' }}</div>
     <form x-show="edit" x-cloak hx-post="/character/{{ c.id }}/edit" hx-target="closest .row" hx-swap="outerHTML" class="stack">
       <label>Tên <input name="name" value="{{ c.name }}"></label>
-      <label>Tên gọi khác (phẩy) <input name="aliases" value="{{ c.aliases|join(', ') }}"></label>
-      <label>Ngoại hình (tiếng Anh, cho model ảnh) <textarea name="appearance" rows="2">{{ c.appearance }}</textarea></label>
+      <label>Tên gọi khác (phân cách bằng dấu phẩy) <input name="aliases" value="{{ c.aliases|join(', ') }}"></label>
+      <label>Ngoại hình (tiếng Anh, cho model ảnh; đổi sẽ tạo lại ảnh tham chiếu) <textarea name="appearance" rows="2">{{ c.appearance }}</textarea></label>
       <label>Vai trò <input name="role" value="{{ c.role }}"></label>
+      <label>Ghi chú riêng <textarea name="notes" rows="2">{{ c.notes }}</textarea></label>
       <button>Lưu</button>
     </form>
   </div>
-  <div class="side">{{ buttons('character', c.id, c.status) }}<button class="ghost" @click="edit=!edit">Sửa</button></div>
+  <div class="side">{{ buttons('character', c.id, c.status) }}<button class="ghost" data-key="e" @click="edit=!edit">Sửa</button></div>
 </div>
 {%- endmacro %}
 
 {% macro location_row(l) -%}
-<div class="row card" x-data="{edit:false}">
+<div class="row card" x-data="{edit:false}" tabindex="0">
   <div class="thumb wide">{% if l.ref_asset %}<img src="{{ media(l.ref_asset) }}" loading="lazy">{% else %}<div class="ph">?</div>{% endif %}</div>
   <div class="grow">
-    <div class="head"><b>{{ l.name }}</b> <small>[{{ l.variant }}]</small> {{ badge(l.status) }} <small>từ chương {{ l.first_chapter }}</small> {{ flags(l._flags) }}</div>
+    <div class="head"><a href="/p/{{ l.project_id }}/locations/{{ l.id }}"><b>{{ l.name }}</b></a>
+      {% if l.aliases %}<small>({{ l.aliases|join(', ') }})</small>{% endif %}
+      {{ badge(l.status) }} <small>từ chương {{ l.first_chapter }}</small> {{ flags(l._flags) }} <small class="muted">#{{ l.id }}</small></div>
     <div>{{ l.description }}</div>
     <form x-show="edit" x-cloak hx-post="/location/{{ l.id }}/edit" hx-target="closest .row" hx-swap="outerHTML" class="stack">
       <label>Tên <input name="name" value="{{ l.name }}"></label>
-      <label>Biến thể <input name="variant" value="{{ l.variant }}"></label>
+      <label>Tên gọi khác <input name="aliases" value="{{ l.aliases|join(', ') }}"></label>
       <label>Mô tả (tiếng Anh) <textarea name="description" rows="2">{{ l.description }}</textarea></label>
       <button>Lưu</button>
     </form>
   </div>
-  <div class="side">{{ buttons('location', l.id, l.status) }}<button class="ghost" @click="edit=!edit">Sửa</button></div>
+  <div class="side">{{ buttons('location', l.id, l.status) }}<button class="ghost" data-key="e" @click="edit=!edit">Sửa</button></div>
 </div>
 {%- endmacro %}
 
 {% macro event_row(e) -%}
-<div class="row card" x-data="{edit:false}">
+<div class="row card" x-data="{edit:false}" tabindex="0">
   <div class="grow">
-    <div class="head"><b>{{ e.char_name }}</b> · chương {{ e.chapter_idx }} · {{ FIELD_LABELS.get(e.field, e.field) }}:
+    <div class="head">{{ '👤' if e.subject_type == 'character' else '🏞' }} <b>{{ e.subject_name }}</b> · chương {{ e.chapter_idx }} · {{ e.labels.get(e.field, e.field) }}:
       {% if e.value %}<code>{{ e.value }}</code>{% else %}<i>kết thúc trạng thái</i>{% endif %}
       {% if e.permanent %}<span class="flag">vĩnh viễn</span>{% elif e.until_chapter %}<small>đến chương {{ e.until_chapter }}</small>{% endif %}
       {{ badge(e.status) }} {{ flags(e._flags) }} {% if e.reviewer %}<small class="muted">{{ e.reviewer }}</small>{% endif %}</div>
-    {% if e.evidence %}<blockquote>{{ e.evidence }}</blockquote>{% endif %}
+    {% if e.evidence %}<blockquote>{{ e.evidence }}{% if e.para %} <a class="small" href="/p/{{ e.project_id }}/c/{{ e.chapter_id }}?tab=text#para-{{ e.para }}">→ đoạn {{ e.para }}</a>{% endif %}</blockquote>{% endif %}
     <form x-show="edit" x-cloak hx-post="/event/{{ e.id }}/edit" hx-target="closest .row" hx-swap="outerHTML" class="grid4">
-      <label>Trường <select name="field">{% for f in FIELDS %}<option value="{{ f }}" {% if f==e.field %}selected{% endif %}>{{ FIELD_LABELS[f] }}</option>{% endfor %}</select></label>
+      <label>Trường <select name="field">{% for f, lb in e.labels.items() %}<option value="{{ f }}" {% if f==e.field %}selected{% endif %}>{{ lb }}</option>{% endfor %}</select></label>
       <label>Giá trị <input name="value" value="{{ e.value }}"></label>
       <label>Đến chương <input name="until_chapter" value="{{ e.until_chapter or '' }}"></label>
       <label><input type="checkbox" name="permanent" {% if e.permanent %}checked{% endif %}> Vĩnh viễn</label>
@@ -69,16 +85,16 @@
       <button>Lưu</button>
     </form>
   </div>
-  <div class="side">{{ buttons('event', e.id, e.status) }}<button class="ghost" @click="edit=!edit">Sửa</button>
+  <div class="side">{{ buttons('event', e.id, e.status) }}<button class="ghost" data-key="e" @click="edit=!edit">Sửa</button>
     <button class="ghost" hx-post="/event/{{ e.id }}/delete" hx-target="closest .row" hx-swap="outerHTML" hx-confirm="Xóa sự kiện này?">Xóa</button></div>
 </div>
 {%- endmacro %}
 
 {% macro beat_row(b) -%}
-<div class="row card beat" x-data="{edit:false, text:false}">
+<div class="row card beat" x-data="{edit:false, text:false}" tabindex="0">
   <div class="grow">
     <div class="head"><b>#{{ b.idx + 1 }}</b> đoạn {{ b.para_start }}–{{ b.para_end }} · {{ b.shot }}
-      · {% if b.loc %}{{ b.loc.name }} [{{ b.loc.variant }}]{% else %}<i>không bối cảnh</i>{% endif %}
+      · {% if b.loc %}{{ b.loc.name }}{% if b.variant != 'default' %} <small>({{ b.variant }})</small>{% endif %}{% else %}<i>không bối cảnh</i>{% endif %}
       {{ badge(b.status) }} {{ flags(b._flags) }}</div>
     <div>{% for c in b.cast %}<span class="chip">{{ c.name }}{% if c.pose %} · {{ c.pose }}{% endif %}{% if c.expression %} · {{ c.expression }}{% endif %}</span>{% endfor %}</div>
     <div class="muted">{{ b.action }}{% if b.mood %} · {{ b.mood }}{% endif %}</div>
@@ -88,9 +104,10 @@
     <form x-show="edit" x-cloak hx-post="/beat/{{ b.id }}/edit" hx-target="closest .row" hx-swap="outerHTML" class="stack">
       <div class="grid4">
         <label>Bối cảnh <input name="location" value="{{ b.loc.name if b.loc else '' }}"></label>
-        <label>Biến thể <input name="variant" value="{{ b.loc.variant if b.loc else 'default' }}"></label>
+        <label>Biến thể <input name="variant" list="variants" value="{{ b.variant }}"></label>
         <label>Góc máy <select name="shot">{% for s in ['wide','medium','close'] %}<option {% if s==b.shot %}selected{% endif %}>{{ s }}</option>{% endfor %}</select></label>
       </div>
+      <datalist id="variants">{% for v in VARIANTS %}<option value="{{ v }}">{% endfor %}</datalist>
       <label>Nhân vật (mỗi dòng: Tên | tư thế | biểu cảm)
         <textarea name="cast" rows="3">{% for c in b.cast %}{{ c.name }} | {{ c.pose }} | {{ c.expression }}
 {% endfor %}</textarea></label>
@@ -102,55 +119,87 @@
       <button>Lưu</button>
     </form>
   </div>
-  <div class="side">{{ buttons('beat', b.id, b.status) }}<button class="ghost" @click="edit=!edit">Sửa</button></div>
+  <div class="side">{{ buttons('beat', b.id, b.status) }}<button class="ghost" data-key="e" @click="edit=!edit">Sửa</button></div>
 </div>
 {%- endmacro %}
 
 {% macro ref_card(r) -%}
-<div class="row card refc" x-data="{edit:false}">
+<div class="row card refc" x-data="{edit:false}" tabindex="0">
   <div class="img">{% if r.asset_id %}<a href="{{ media(r.asset_id) }}" target="_blank"><img src="{{ media(r.asset_id) }}" loading="lazy"></a>{% else %}<div class="ph">{{ r.status }}</div>{% endif %}</div>
-  <div class="head"><b>{{ r.label }}</b><br>{{ badge(r.status) }} {% if r.locked %}<span class="flag">đã khóa</span>{% endif %} {{ flags(r._flags) }}
-    <small class="muted">{{ r.state_key }} · seed {{ r.seed }}</small></div>
+  <div class="head"><b>{{ r.label }}</b><br>{{ badge(r.status) }} {% if r.locked %}<span class="flag">🔒 khóa</span>{% endif %} {{ flags(r._flags) }}
+    <small class="muted">từ chương {{ r.first_chapter }} · seed {{ r.seed }}</small></div>
   <div class="side">{{ buttons('ref', r.id, r.status) }}
-    <button class="ghost" hx-post="/ref/{{ r.id }}/regen" hx-target="closest .row" hx-swap="outerHTML">Tạo lại</button>
-    <button class="ghost" @click="edit=!edit">Prompt</button></div>
+    <button class="ghost" data-key="g" hx-post="/ref/{{ r.id }}/regen" hx-target="closest .row" hx-swap="outerHTML">Tạo lại</button>
+    <button class="ghost" hx-post="/ref/{{ r.id }}/lock" hx-target="closest .row" hx-swap="outerHTML">{{ 'Mở khóa' if r.locked else 'Khóa' }}</button>
+    <button class="ghost" data-key="e" @click="edit=!edit">Prompt</button></div>
   <div x-show="edit" x-cloak class="stack">
     <form hx-post="/ref/{{ r.id }}/regen" hx-target="closest .row" hx-swap="outerHTML" class="stack">
-      <textarea name="prompt" rows="4">{{ r.prompt }}</textarea><button>Lưu prompt và tạo lại</button></form>
+      <textarea name="prompt" rows="4">{{ r.prompt }}</textarea><button>Lưu prompt (khóa) và tạo lại</button></form>
     <form method="post" action="/ref/{{ r.id }}/upload" enctype="multipart/form-data" class="inline">
       <input type="file" name="file" accept="image/*" required><button>Tải ảnh của bạn lên</button></form>
   </div>
 </div>
 {%- endmacro %}
 
-{% macro segment_card(s) -%}
-<div class="row card seg" x-data="{edit:false}">
-  <div class="img">{% if s.image_asset_id %}<a href="{{ media(s.image_asset_id) }}" target="_blank"><img src="{{ media(s.image_asset_id) }}" loading="lazy"></a>{% else %}<div class="ph">{{ s.image_status }}</div>{% endif %}</div>
-  <div class="head">Ch.{{ s.chapter_idx }} · cảnh {{ s.idx + 1 }} {% if s.stale %}<span class="flag">ảnh cũ</span>{% endif %}</div>
-  <div>Ảnh: {{ badge(s.image_status) }} {{ flags(s.image_flags|fromjson) }}
-    {% if s.image_status != 'approved' %}<button class="ok" hx-post="/review/segment_image/{{ s.id }}/approve" hx-target="closest .row" hx-swap="outerHTML">Duyệt</button>{% endif %}
-    {% if s.image_status not in ('rejected','missing','generating') %}<button class="no" hx-post="/review/segment_image/{{ s.id }}/reject" hx-target="closest .row" hx-swap="outerHTML">Từ chối</button>{% endif %}
-    <button class="ghost" hx-post="/segment/{{ s.id }}/regen-image" hx-target="closest .row" hx-swap="outerHTML">Tạo lại</button></div>
-  <div>Giọng: {{ badge(s.audio_status) }} {{ flags(s.audio_flags|fromjson) }} {% if s.duration %}<small>{{ s.duration|secs }}</small>{% endif %}
-    {% if s.audio_status not in ('approved','missing','generating') %}<button class="ok" hx-post="/review/segment_audio/{{ s.id }}/approve" hx-target="closest .row" hx-swap="outerHTML">Duyệt</button>{% endif %}
-    {% if s.audio_status not in ('rejected','missing','generating') %}<button class="no" hx-post="/review/segment_audio/{{ s.id }}/reject" hx-target="closest .row" hx-swap="outerHTML">Từ chối</button>{% endif %}
-    <button class="ghost" hx-post="/segment/{{ s.id }}/regen-audio" hx-target="closest .row" hx-swap="outerHTML">Đọc lại</button></div>
-  {% if s.audio_asset_id %}<audio controls preload="none" src="{{ media(s.audio_asset_id) }}"></audio>{% endif %}
-  <div class="narr small">{{ s.narration[:260] }}{% if s.narration|length > 260 %}…{% endif %}</div>
-  <button class="ghost small" @click="edit=!edit">Sửa lời đọc</button>
-  <form x-show="edit" x-cloak hx-post="/segment/{{ s.id }}/narration" hx-target="closest .row" hx-swap="outerHTML" class="stack">
-    <textarea name="narration" rows="5">{{ s.narration }}</textarea><button>Lưu và đọc lại</button></form>
+{% macro scene_card(b) -%}
+<div class="row card scene" x-data="{edit:false, diff:false, narr:false}" tabindex="0">
+  <div class="scene-top">
+    <div class="img master">{% if b.image_asset_id %}<a href="{{ media(b.image_asset_id) }}" target="_blank"><img src="{{ media(b.image_asset_id) }}" loading="lazy"></a>{% else %}<div class="ph">{{ {'missing':'chờ ảnh tham chiếu','generating':'đang tạo...','failed':'lỗi'}.get(b.image_status, b.image_status) }}</div>{% endif %}</div>
+    {% if b.image_asset_id and (b.segment or b.panel) %}
+    <div class="crops">
+      {% if b.segment %}<div class="crop" style="aspect-ratio: {{ b.video_aspect }}" title="Khung video"><img src="{{ media(b.image_asset_id) }}" style="object-position: {{ b.segment.focus_x*100 }}% {{ b.segment.focus_y*100 }}%"><span>video</span></div>{% endif %}
+      {% if b.panel %}<div class="crop" style="aspect-ratio: {{ b.img_width }}/{{ b.img_height }}" title="Khung truyện"><img src="{{ media(b.image_asset_id) }}" style="object-position: {{ b.panel.focus_x*100 }}% {{ b.panel.focus_y*100 }}%"><span>truyện</span></div>{% endif %}
+    </div>{% endif %}
+  </div>
+  <div class="head">Ch.{{ b.chapter_idx }} · nhịp {{ b.idx + 1 }} · {{ b.shot }}{% if b.loc %} · {{ b.loc.name }}{% endif %}
+    {{ badge(b.image_status) }} {{ flags(b._flags) }}
+    {% if b.image_locked %}<span class="flag">🔒 khóa</span>{% endif %}
+    {% if b.prompt_override %}<span class="flag">prompt tay</span>{% endif %}
+    {% if b.stale.stale %}<a href="#" class="flag warnflag" @click.prevent="diff=!diff">ảnh cũ: xem thay đổi</a>{% endif %}
+    {% if b.panel and 'text_overflow' in b.panel.flags %}<span class="flag">thoại tràn khung</span>{% endif %}</div>
+  <div x-show="diff" x-cloak class="diff small">{% if b.stale.stale %}{% if b.stale.waiting %}<div>Trạng thái đã đổi; đang chờ ảnh tham chiếu mới được tạo / duyệt.</div>{% elif b.stale.refs_changed %}<div>Ảnh tham chiếu đã đổi.</div>{% endif %}{{ b.stale.diff|safe }}{% endif %}</div>
+  <div class="side">
+    {{ buttons('beat_image', b.id, b.image_status) }}
+    <button class="ghost" data-key="g" hx-post="/beat/{{ b.id }}/regen" hx-target="closest .row" hx-swap="outerHTML">Tạo lại</button>
+    <button class="ghost" hx-post="/beat/{{ b.id }}/lock" hx-target="closest .row" hx-swap="outerHTML" title="Ảnh khóa không bị đánh dấu cũ và không bị tạo lại hàng loạt">{{ 'Mở khóa' if b.image_locked else 'Khóa' }}</button>
+    <button class="ghost" data-key="e" @click="edit=!edit">Prompt</button>
+  </div>
+  <div x-show="edit" x-cloak class="stack">
+    <form hx-post="/beat/{{ b.id }}/prompt" hx-target="closest .row" hx-swap="outerHTML" class="stack">
+      <label>Prompt sửa tay (để trống = tự sinh từ dữ liệu)<textarea name="prompt_override" rows="4" placeholder="{{ b.image_prompt }}">{{ b.prompt_override }}</textarea></label>
+      <span><button name="regen" value="1">Lưu và tạo lại</button> <button class="ghost">Chỉ lưu</button></span></form>
+    <form method="post" action="/beat/{{ b.id }}/upload" enctype="multipart/form-data" class="inline">
+      <input type="file" name="file" accept="image/*" required><button>Thay bằng ảnh của bạn</button></form>
+  </div>
+  {% if b.segment %}{% set s = b.segment %}
+  <div class="audio-row">
+    <form hx-post="/segment/{{ s.id }}/frame" hx-target="closest .row" hx-swap="outerHTML" hx-trigger="change" class="inline small">
+      Video: <select name="focus">{% for k, lb in FOCUS_LABELS.items() %}<option value="{{ k }}" {% if focus_name(s.focus_x, s.focus_y)==k %}selected{% endif %}>{{ lb }}</option>{% endfor %}</select>
+      <select name="motion">{% for k, lb in MOTION_LABELS.items() %}<option value="{{ k }}" {% if s.motion==k %}selected{% endif %}>{{ lb }}</option>{% endfor %}</select></form>
+    <span class="small">Giọng: {{ badge(s.audio_status) }} {{ flags(s.audio_flags|fromjson) }} {% if s.duration %}{{ s.duration|secs }}{% endif %}</span>
+    {% if s.audio_status not in ('approved','missing','generating') %}<button class="ok small" hx-post="/review/segment_audio/{{ s.id }}/approve?as=scene" hx-target="closest .row" hx-swap="outerHTML">Duyệt giọng</button>{% endif %}
+    {% if s.audio_status not in ('rejected','missing','generating') %}<button class="no small" hx-post="/review/segment_audio/{{ s.id }}/reject?as=scene" hx-target="closest .row" hx-swap="outerHTML">Từ chối giọng</button>{% endif %}
+    <button class="ghost small" hx-post="/segment/{{ s.id }}/regen-audio" hx-target="closest .row" hx-swap="outerHTML">Đọc lại</button>
+    <button class="ghost small" @click="narr=!narr">Sửa lời đọc</button>
+    {% if s.audio_asset_id %}<audio controls preload="none" src="{{ media(s.audio_asset_id) }}"></audio>{% endif %}
+    <form x-show="narr" x-cloak hx-post="/segment/{{ s.id }}/narration" hx-target="closest .row" hx-swap="outerHTML" class="stack">
+      <textarea name="narration" rows="5">{{ s.narration }}</textarea><button>Lưu và đọc lại</button></form>
+  </div>{% endif %}
+  {% if b.panel %}
+  <div class="audio-row small">
+    <form hx-post="/panel/{{ b.panel.id }}/frame" hx-target="closest .row" hx-swap="outerHTML" hx-trigger="change" class="inline">
+      Khung truyện: <select name="focus">{% for k, lb in FOCUS_LABELS.items() %}<option value="{{ k }}" {% if focus_name(b.panel.focus_x, b.panel.focus_y)==k %}selected{% endif %}>{{ lb }}</option>{% endfor %}</select></form>
+    {% for bl in b.balloons or [] %}<span class="dlg">[{{ bl.kind }}] {{ bl.text[:60] }}</span>{% endfor %}
+  </div>{% endif %}
 </div>
 {%- endmacro %}
 
-{% macro panel_card(s) -%}
-<div class="row card seg">
-  <div class="img">{% if s.image_asset_id %}<a href="{{ media(s.image_asset_id) }}" target="_blank"><img src="{{ media(s.image_asset_id) }}" loading="lazy"></a>{% else %}<div class="ph">{{ s.image_status }}</div>{% endif %}</div>
-  <div class="head">Ch.{{ s.chapter_idx }} · khung {{ s.slot + 1 }} · {{ s.width }}×{{ s.height }} {% if s.stale %}<span class="flag">ảnh cũ</span>{% endif %}</div>
-  <div>{{ badge(s.image_status) }} {{ flags(s.image_flags|fromjson) }}
-    {% if s.image_status != 'approved' %}<button class="ok" hx-post="/review/panel_image/{{ s.id }}/approve" hx-target="closest .row" hx-swap="outerHTML">Duyệt</button>{% endif %}
-    {% if s.image_status not in ('rejected','missing','generating') %}<button class="no" hx-post="/review/panel_image/{{ s.id }}/reject" hx-target="closest .row" hx-swap="outerHTML">Từ chối</button>{% endif %}
-    <button class="ghost" hx-post="/panel/{{ s.id }}/regen" hx-target="closest .row" hx-swap="outerHTML">Tạo lại</button></div>
-  {% for b in s.balloons or [] %}<div class="dlg small">[{{ b.kind }}] {{ b.text }}</div>{% endfor %}
+{% macro audio_card(s) -%}
+<div class="row card seg" tabindex="0">
+  <div class="img">{% if s.image_asset_id %}<img src="{{ media(s.image_asset_id) }}" loading="lazy">{% else %}<div class="ph">chưa có ảnh</div>{% endif %}</div>
+  <div class="head">Ch.{{ s.chapter_idx }} · đoạn {{ s.idx + 1 }} · {{ badge(s.audio_status) }} {{ flags(s._flags) }} {% if s.duration %}{{ s.duration|secs }}{% endif %}</div>
+  {% if s.audio_asset_id %}<audio controls preload="none" src="{{ media(s.audio_asset_id) }}"></audio>{% endif %}
+  <div class="narr small">{{ s.narration[:300] }}{% if s.narration|length > 300 %}…{% endif %}</div>
+  <div class="side">{{ buttons('segment_audio', s.id, s.audio_status) }}</div>
 </div>
 {%- endmacro %}

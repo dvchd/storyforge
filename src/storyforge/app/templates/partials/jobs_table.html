@@ -1,11 +1,14 @@
-<p class="muted small">{% for k, v in jobcounts.items() %}{{ k }}: {{ v }} · {% endfor %}tự làm mới mỗi 3 giây</p>
+<div class="stats small">{% for k, v in stats.items() if v.pending %}<span class="pill">{{ k }}: còn {{ v.pending }}, ~{{ v.eta|secs }}</span> {% endfor %}
+  <span class="muted">{% for k, v in jobcounts.items() %}{{ k }}: {{ v }} · {% endfor %}tự làm mới mỗi 3 giây</span></div>
 <table class="tbl small">
-<thead><tr><th>#</th><th>Loại</th><th>Cho</th><th>Trạng thái</th><th>Lần</th><th>Worker</th><th>Model</th><th>Thời gian</th><th>Lỗi</th><th></th></tr></thead>
+<thead><tr><th>#</th><th>Loại</th><th>Cho</th><th>Trạng thái</th><th>Tiến độ</th><th>Lần</th><th>Worker / model</th><th>Thời gian</th><th>Lỗi</th><th></th></tr></thead>
 {% for j in rows %}
 <tr class="j-{{ j.status }}"><td><a href="/job/{{ j.id }}">{{ j.id }}</a></td><td>{{ j.kind }}</td><td>{{ j.owner_type }}:{{ j.owner_id }}</td>
-<td>{{ j.status }}</td><td>{{ j.attempts }}/{{ j.max_attempts }}</td><td>{{ j.worker_id }}</td><td>{{ j.model_id or j.model_hint }}</td>
-<td>{{ j.elapsed|secs }}</td><td class="err">{{ j.error[:160] }}</td>
+<td>{{ j.status }}{% if j.pos %} <span class="muted">(thứ {{ j.pos }})</span>{% endif %}{% if j.cancel_requested and j.status=='running' %} <span class="flag">đang hủy</span>{% endif %}</td>
+<td style="min-width:110px">{% if j.status == 'running' %}<div class="prog"><div style="width: {{ ((j.progress or 0)*100)|int }}%"></div><span>{{ ((j.progress or 0)*100)|int }}% {{ j.progress_msg }}</span></div>{% endif %}</td>
+<td>{{ j.attempts }}/{{ j.max_attempts }}</td><td>{{ j.worker_id }}<br><span class="muted">{{ j.model_id or j.model_hint }}</span></td>
+<td>{{ j.elapsed|secs }}{% if j.tokens_in %}<br><span class="muted">{{ j.tokens_in }}→{{ j.tokens_out }} tok</span>{% endif %}</td><td class="err">{{ j.error[:160] }}</td>
 <td class="nowrap">{% if j.status in ('failed','cancelled','done') %}<form method="post" action="/job/{{ j.id }}/retry" class="inline"><button class="ghost">Chạy lại</button></form>{% endif %}
-{% if j.status in ('queued','running') %}<form method="post" action="/job/{{ j.id }}/cancel" class="inline"><button class="ghost">Hủy</button></form>{% endif %}</td></tr>
+{% if j.status in ('queued','running') and not j.cancel_requested %}<form method="post" action="/job/{{ j.id }}/cancel" class="inline"><button class="ghost">Hủy</button></form>{% endif %}</td></tr>
 {% else %}<tr><td colspan="10" class="muted">Không có job.</td></tr>{% endfor %}
 </table>

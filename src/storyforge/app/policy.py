@@ -1,7 +1,7 @@
-"""Cong duyet va chinh sach duyet nhieu cap.
+"""Cổng duyệt và chính sách duyệt nhiều cấp.
 
-Duyet tu dong chi la mot nguoi duyet dac biet: moi muc deu di qua decide(),
-ket qua la 'approved' hoac 'pending'. Engine chi di tiep sau khi muc duoc duyet.
+Duyệt tự động chỉ là một người duyệt đặc biệt: mọi mục đều đi qua decide(),
+kết quả là 'approved' hoặc 'pending'. Engine chỉ đi tiếp sau khi mục được duyệt.
 """
 from __future__ import annotations
 
@@ -29,10 +29,10 @@ GATES = [g.value for g in Gate]
 
 GATE_LABELS = {
     "identity": "G1 Danh tính: nhân vật, bối cảnh mới",
-    "state": "G2 Trạng thái nhân vật theo chương",
-    "breakdown": "G3 Chia nhịp (beat)",
-    "reference": "G4 Ảnh tham chiếu: mặt, trang phục, bối cảnh",
-    "scene": "G5 Ảnh cảnh / ảnh khung truyện",
+    "state": "G2 Trạng thái nhân vật / bối cảnh theo chương",
+    "breakdown": "G3 Chia nhịp",
+    "reference": "G4 Ảnh tham chiếu: mặt, toàn thân, bối cảnh",
+    "scene": "G5 Ảnh cảnh (dùng chung video và truyện tranh)",
     "audio": "G6 Giọng đọc",
     "publish": "G7 Dựng và xuất bản",
 }
@@ -52,22 +52,26 @@ MODE_LABELS = {
     "manual": "Luôn chờ người duyệt",
 }
 
-# Co canh bao do app tu kiem tra.
+# Cờ do app tự kiểm tra. INFO_FLAGS chỉ mang tính thông tin, không tự chặn duyệt tự động.
 FLAG_LABELS = {
     "new_identity": "Nhân vật / bối cảnh mới",
+    "possible_duplicate": "Có thể trùng với mục đã có",
+    "alias_collision": "Tên gọi khác trùng người khác",
     "unknown_character": "Tên không khớp danh sách nhân vật",
     "unknown_location": "Bối cảnh chưa biết",
     "evidence_missing": "Câu trích không có trong chương",
     "permanent": "Thay đổi vĩnh viễn",
     "conflict": "Mâu thuẫn với trạng thái hiện có",
+    "age_regression": "Tuổi giảm so với trước",
     "redundant": "Trùng với trạng thái hiện có",
     "span_adjusted": "Khoảng đoạn văn đã bị chỉnh lại",
     "too_many_cast": "Quá nhiều nhân vật trong một khung",
     "no_location": "Chưa gắn bối cảnh",
-    "audio_mismatch": "Thời lượng audio bất thường",
-    "stale": "Đầu vào đã thay đổi",
+    "audio_mismatch": "Tốc độ đọc bất thường",
+    "text_overflow": "Lời thoại tràn khung",
     "regenerated": "Đã tạo lại",
 }
+INFO_FLAGS = {"new_identity", "regenerated", "permanent", "redundant"}
 
 
 class GatePolicy(BaseModel):
@@ -77,7 +81,7 @@ class GatePolicy(BaseModel):
     always_review: list[str] = Field(default_factory=list)
 
 
-_SAFE = ["conflict", "evidence_missing"]
+_SAFE = ["conflict", "evidence_missing", "age_regression"]
 
 
 def _g(mode: str, batch: str = "item", sample: float = 0.1, always: list[str] | None = None) -> dict:
@@ -94,18 +98,18 @@ LEVELS: dict[str, dict[str, Any]] = {
         "label": "1. Tự động có ngoại lệ",
         "desc": "Chỉ dừng khi app phát hiện cảnh báo.",
         "gates": {
-            "identity": _g("auto_if_clean", always=_SAFE + ["unknown_character", "unknown_location"]),
+            "identity": _g("auto_if_clean", always=["possible_duplicate", "alias_collision", "unknown_character"]),
             "state": _g("auto_if_clean", always=_SAFE),
             "breakdown": _g("auto_if_clean"),
             "reference": _g("auto_if_clean"),
             "scene": _g("auto"),
-            "audio": _g("auto"),
+            "audio": _g("auto_if_clean"),
             "publish": _g("auto"),
         },
     },
     "2": {
         "label": "2. Duyệt nền tảng (khuyên dùng)",
-        "desc": "Bạn duyệt danh tính, ảnh tham chiếu và thay đổi vĩnh viễn. Còn lại tự chạy.",
+        "desc": "Bạn duyệt danh tính, ảnh tham chiếu và thay đổi vĩnh viễn. Còn lại tự chạy, rút mẫu 10%.",
         "gates": {
             "identity": _g("manual"),
             "state": _g("auto_if_clean", always=_SAFE + ["permanent"]),
@@ -118,7 +122,7 @@ LEVELS: dict[str, dict[str, Any]] = {
     },
     "3": {
         "label": "3. Duyệt từng chương",
-        "desc": "Trạng thái và chia nhịp duyệt theo cả chương.",
+        "desc": "Trạng thái và chia nhịp duyệt gộp theo cả chương.",
         "gates": {
             "identity": _g("manual"),
             "state": _g("manual", batch="chapter"),
@@ -145,28 +149,24 @@ def project_policy(project: dict) -> dict:
     return p
 
 
+def chapter_policy(chapter: dict | None) -> dict:
+    return (jl(chapter.get("policy_json"), {}) or {}) if chapter else {}
+
+
 def effective(project: dict, chapter: dict | None = None) -> dict[str, GatePolicy]:
-    """Mac dinh theo cap -> de theo du an -> de theo chuong (cap va tung cong)."""
+    """Cấp (của chương nếu có, không thì của dự án) -> ghi đè cổng của dự án -> ghi đè cổng của chương.
+
+    Đặt cấp riêng cho chương KHÔNG xóa các ghi đè cổng đã cấu hình ở dự án.
+    """
     pp = project_policy(project)
-    level = str(pp.get("level", "2"))
-    over_gates = dict(pp.get("gates") or {})
-    if chapter is not None:
-        cp = jl(chapter.get("policy_json"), {}) or {}
-        if cp.get("level") not in (None, ""):
-            level = str(cp["level"])
-            over_gates = {}
-        for g, v in (cp.get("gates") or {}).items():
-            over_gates[g] = {**over_gates.get(g, {}), **v}
-    base = copy.deepcopy(LEVELS.get(level, LEVELS["2"])["gates"])
-    out: dict[str, GatePolicy] = {}
-    for g in GATES:
-        merged = {**base.get(g, _g("manual")), **{k: v for k, v in (over_gates.get(g) or {}).items() if v not in (None, "")}}
-        out[g] = GatePolicy(**merged)
-    return out
-
-
-# Co mang tinh thong tin: khong tu chan duyet tu dong, tru khi nam trong always_review.
-INFO_FLAGS = {"new_identity", "regenerated", "permanent"}
+    cp = chapter_policy(chapter)
+    level = str(cp.get("level") or pp.get("level", "2"))
+    gates = copy.deepcopy(LEVELS.get(level, LEVELS["2"])["gates"])
+    for layer in (pp.get("gates") or {}, cp.get("gates") or {}):
+        for g, v in layer.items():
+            if g in gates and v:
+                gates[g].update({k: val for k, val in v.items() if val not in (None, "")})
+    return {g: GatePolicy(**gates.get(g, _g("manual"))) for g in GATES}
 
 
 def decide(gp: GatePolicy, flags: set[str] | list[str], rng: random.Random) -> str:
@@ -184,9 +184,5 @@ def decide(gp: GatePolicy, flags: set[str] | list[str], rng: random.Random) -> s
 
 
 def policy_name(project: dict, chapter: dict | None, gate: str) -> str:
-    pp = project_policy(project)
-    level = str(pp.get("level"))
-    if chapter is not None:
-        cp = jl(chapter.get("policy_json"), {}) or {}
-        level = str(cp.get("level") or level)
+    level = str(chapter_policy(chapter).get("level") or project_policy(project).get("level"))
     return f"auto:L{level}:{gate}"

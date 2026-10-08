@@ -4,27 +4,15 @@ build-backend = "hatchling.build"
 
 [project]
 name = "storyforge"
-version = "0.1.0"
-description = "Quan ly trang thai nhan vat, tai nguyen anh va hang doi AI de bien truyen chu thanh video minh hoa co loi doc va truyen tranh."
+version = "0.2.0"
+description = "Quản lý trạng thái nhân vật, tài nguyên ảnh và hàng đợi AI để biến truyện chữ thành video minh họa có lời đọc và truyện tranh."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
-# Phan loi dung chung cho app va worker: chi can pydantic, httpx, pillow.
-dependencies = [
-  "pydantic>=2.6",
-  "httpx>=0.27",
-  "pillow>=10.1",
-]
+dependencies = ["pydantic>=2.6", "httpx>=0.27", "pillow>=10.1"]
 
 [project.optional-dependencies]
-# Ung dung quan ly (web UI + API cho worker). Khong phu thuoc model AI nao.
-app = [
-  "fastapi>=0.110",
-  "uvicorn[standard]>=0.29",
-  "jinja2>=3.1",
-  "python-multipart>=0.0.9",
-]
-# Cac adapter cho worker. Cai theo phan cung cua tung may.
+app = ["fastapi>=0.110", "uvicorn[standard]>=0.29", "jinja2>=3.1", "python-multipart>=0.0.9"]
 edge = ["edge-tts>=7.0"]
 vieneu = ["vieneu"]
 rembg = ["rembg[cpu]"]

@@ -2,7 +2,11 @@
 {% import "_macros.html" as m %}
 {% block content %}
 <div class="bar"><h1>Ảnh tham chiếu</h1>
-  {% for s, l in [('', 'Tất cả'), ('pending','Chờ duyệt'), ('approved','Đã duyệt'), ('rejected','Từ chối'), ('generating','Đang tạo'), ('failed','Lỗi')] %}
-  <a href="?status={{ s }}" class="{{ 'on' if status==s else '' }}">{{ l }}</a>{% endfor %}</div>
-<div class="gallery">{% for r in refs %}{{ m.ref_card(r) }}{% else %}<p class="muted">Chưa có.</p>{% endfor %}</div>
+  {% for s, lb in [('', 'Tất cả'), ('pending','Chờ duyệt'), ('approved','Đã duyệt'), ('rejected','Từ chối'), ('generating','Đang tạo'), ('failed','Lỗi')] %}
+  <a href="?status={{ s }}&kind={{ kind }}" class="{{ 'on' if status==s else '' }}">{{ lb }}</a>{% endfor %}
+  ·
+  {% for k, lb in [('', 'Mọi loại'), ('character_face','Mặt'), ('character_outfit','Toàn thân'), ('location','Bối cảnh')] %}
+  <a href="?status={{ status }}&kind={{ k }}" class="{{ 'on' if kind==k else '' }}">{{ lb }}</a>{% endfor %}</div>
+<p class="muted small">Ảnh "Khóa" giữ nguyên prompt bạn sửa tay, không bị ghi đè khi mô tả nhân vật thay đổi.</p>
+<div class="gallery kbd-scope">{% for r in refs %}{{ m.ref_card(r) }}{% else %}<p class="muted">Chưa có.</p>{% endfor %}</div>
 {% endblock %}

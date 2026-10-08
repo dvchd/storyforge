@@ -1,0 +1,26 @@
+{% import "_macros.html" as m %}
+<table class="tbl">
+  <thead><tr><th>#</th><th>Chương</th><th>Tiến trình</th><th>Sản xuất</th><th>Chờ duyệt</th><th></th></tr></thead>
+  <tbody>
+  {% for c in chapters %}
+  <tr>
+    <td>{{ c.idx }}</td>
+    <td><a href="/p/{{ p.id }}/c/{{ c.id }}">{{ c.title }}</a>
+      {% if c.needs_recheck %}<span class="flag" title="Trạng thái ở chương trước đã đổi">cần rà lại</span>{% endif %}
+      {% if c.active %}<span class="pill" title="Job đang chờ/chạy">⚙ {{ c.active }}</span>{% endif %}</td>
+    <td>{{ m.steps(c.status) }} <span class="st st-{{ c.status }}">{{ STATUS_LABELS.get(c.status, c.status) }}</span>
+      {% if c.error %}<div class="err small">{{ c.error[:160] }}</div>{% endif %}</td>
+    <td class="small" style="min-width:160px">{% if c.progress.images %}{{ m.progress(c.progress.pct, 'Ảnh ' ~ c.progress.images_ok ~ '/' ~ c.progress.images ~ (' · Giọng ' ~ c.progress.audio_ok ~ '/' ~ c.progress.audio if c.progress.audio else '')) }}{% endif %}</td>
+    <td>{% if c.pending %}<a class="pill warn" href="/p/{{ p.id }}/review?chapter={{ c.id }}">{{ c.pending }}</a>{% endif %}</td>
+    <td class="nowrap">
+      {% if c.status == 'new' %}<form method="post" action="/c/{{ c.id }}/run" class="inline"><button>Chạy</button></form>{% endif %}
+      {% if c.status == 'error' %}<form method="post" action="/c/{{ c.id }}/retry" class="inline"><button>Thử lại</button></form>{% endif %}
+      {% if p.mode in ('video','both') and c.status in ('producing','done') %}<a href="/p/{{ p.id }}/c/{{ c.id }}/preview/video">▶ Video</a>{% endif %}
+      {% if p.mode in ('comic','both') and c.status in ('producing','done') %}<a href="/p/{{ p.id }}/c/{{ c.id }}/preview/comic">▤ Truyện</a>{% endif %}
+      {% if c.video_asset_id %}<a href="{{ media(c.video_asset_id) }}?download=1">MP4</a>{% endif %}
+      {% if c.comic_cbz_asset_id %}<a href="{{ media(c.comic_cbz_asset_id) }}?download=1">CBZ</a>{% endif %}
+    </td>
+  </tr>
+  {% else %}<tr><td colspan="6" class="muted">Chưa có chương.</td></tr>{% endfor %}
+  </tbody>
+</table>

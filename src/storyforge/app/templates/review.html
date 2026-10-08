@@ -2,28 +2,33 @@
 {% import "_macros.html" as m %}
 {% block content %}
 <div class="bar"><h1>Duyệt</h1>
-  <form method="get" class="inline"><select name="chapter" onchange="this.form.submit()"><option value="">Tất cả chương</option>
-    {% for c in chapters %}<option value="{{ c.id }}" {% if chapter==c.id %}selected{% endif %}>Chương {{ c.idx }}: {{ c.title }}</option>{% endfor %}</select></form>
-  <a href="/p/{{ p.id }}/audit?reviewer=auto">Xem các mục máy tự duyệt</a>
+  <form method="get" class="inline">
+    <select name="chapter" onchange="this.form.submit()"><option value="">Tất cả chương</option>
+      {% for c in chapters %}<option value="{{ c.id }}" {% if chapter==c.id %}selected{% endif %}>Chương {{ c.idx }}: {{ c.title }}</option>{% endfor %}</select>
+    <select name="entity" onchange="this.form.submit()"><option value="">Mọi loại</option>
+      {% for k, v in TITLES.items() %}<option value="{{ k }}" {% if entity==k %}selected{% endif %}>{{ v }} ({{ pending.get(k, 0) }})</option>{% endfor %}</select></form>
+  <a href="/p/{{ p.id }}/audit?reviewer=auto">Rà lại các mục máy tự duyệt</a>
+  <span class="muted small">Phím tắt: <kbd>j</kbd>/<kbd>k</kbd> chọn, <kbd>a</kbd> duyệt, <kbd>r</kbd> từ chối, <kbd>e</kbd> sửa, <kbd>?</kbd> trợ giúp</span>
 </div>
-{% set titles = {'character':'Nhân vật mới','location':'Bối cảnh mới','event':'Sự kiện trạng thái','beat':'Nhịp','ref':'Ảnh tham chiếu','segment_image':'Ảnh cảnh video','segment_audio':'Giọng đọc','panel_image':'Ảnh khung truyện'} %}
+<div class="kbd-scope">
 {% for sec in sections %}{% if sec.rows %}
 <section>
-  <div class="bar"><h2>{{ titles[sec.entity] }} <span class="pill warn">{{ sec.rows|length }}</span></h2>
+  <div class="bar"><h2>{{ TITLES[sec.entity] }} <span class="pill warn">{{ sec.rows|length }}</span></h2>
     <form method="post" action="/p/{{ p.id }}/review/bulk" class="inline"><input type="hidden" name="entity" value="{{ sec.entity }}">
       {% if chapter %}<input type="hidden" name="chapter_id" value="{{ chapter }}">{% endif %}
-      <button class="ok" name="action" value="approve">Duyệt tất cả</button></form></div>
-  <div class="{{ 'gallery' if sec.entity in ('ref','segment_image','segment_audio','panel_image') else '' }}">
+      <button class="ok" name="action" value="approve" onclick="return confirm('Duyệt tất cả {{ sec.rows|length }} mục?')">Duyệt tất cả</button></form></div>
+  <div class="{{ 'gallery' if sec.entity in ('ref','segment_audio') else ('gallery wide' if sec.entity == 'beat_image' else '') }}">
   {% for r in sec.rows %}
     {% if sec.entity == 'character' %}{{ m.character_row(r) }}
     {% elif sec.entity == 'location' %}{{ m.location_row(r) }}
     {% elif sec.entity == 'event' %}{{ m.event_row(r) }}
     {% elif sec.entity == 'beat' %}{{ m.beat_row(r) }}
     {% elif sec.entity == 'ref' %}{{ m.ref_card(r) }}
-    {% elif sec.entity == 'panel_image' %}{{ m.panel_card(r) }}
-    {% else %}{{ m.segment_card(r) }}{% endif %}
+    {% elif sec.entity == 'beat_image' %}{{ m.scene_card(r) }}
+    {% else %}{{ m.audio_card(r) }}{% endif %}
   {% endfor %}</div>
 </section>
 {% endif %}{% endfor %}
-{% if not pending.total %}<p class="muted">Không có mục nào chờ duyệt.</p>{% endif %}
+</div>
+{% if not pending.total %}<div class="card"><p>🎉 Không có mục nào chờ duyệt.</p>{% if pending.suggestions %}<p><a href="/p/{{ p.id }}/characters#suggestions">Còn {{ pending.suggestions }} gợi ý gộp trùng</a></p>{% endif %}</div>{% endif %}
 {% endblock %}

@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Dung lượng và sao lưu</h1>
+{% if result %}<div class="banner ok">{{ result }}</div>{% endif %}
+<div class="cols">
+<section class="card">
+  <h3>Tài nguyên</h3>
+  <p>Tổng trên đĩa: <b>{{ u.disk_total|bytes }}</b> · Không còn dùng: <b>{{ u.orphan_count }}</b> bản ghi (~{{ u.orphan_bytes|bytes }})</p>
+  <table class="tbl small"><tr><th>Loại</th><th>Số lượng</th><th>Dung lượng</th></tr>
+    {% for r in u.by_kind %}<tr><td>{{ r.kind }}</td><td>{{ r.n }}</td><td>{{ r.bytes|bytes }}</td></tr>{% endfor %}</table>
+  <h4>Theo dự án</h4>
+  <table class="tbl small"><tr><th>Dự án</th><th>Số lượng</th><th>Dung lượng</th></tr>
+    {% for r in u.by_project %}<tr><td>{{ r.name or '(đã xóa)' }}</td><td>{{ r.n }}</td><td>{{ r.bytes|bytes }}</td></tr>{% endfor %}</table>
+</section>
+<section class="card">
+  <h3>Dọn dẹp</h3>
+  <p class="small muted">Xóa ảnh và audio không còn được dùng: các lần tạo cũ, dự án đã xóa, file lạc. Bản cũ chỉ có ích khi bạn quay lại đúng đầu vào cũ.</p>
+  <form method="post" action="/storage/gc" class="stack">
+    <label>Chỉ xóa tài nguyên cũ hơn (giờ) <input name="hours" type="number" step="0.5" value="24"></label>
+    <span><button name="dry_run" value="1" class="ghost">Thử trước</button> <button onclick="return confirm('Xóa vĩnh viễn?')">Dọn dẹp</button></span>
+  </form>
+  <h3>Sao lưu cơ sở dữ liệu</h3>
+  <p class="small muted">App tự sao lưu trước mỗi lần nâng cấp schema và trước lệnh demo. Giữ 20 bản gần nhất trong data/backups/.</p>
+  <form method="post" action="/storage/backup"><button>Sao lưu ngay</button></form>
+  <ul class="small">{% for b in backups %}<li>{{ b.name }} · {{ b.stat().st_size|bytes }}</li>{% endfor %}</ul>
+</section>
+</div>
+{% endblock %}

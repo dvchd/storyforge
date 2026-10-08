@@ -1,14 +1,14 @@
-"""API cho worker. Worker khong truy cap DB truc tiep, chi goi cac endpoint nay."""
+"""API cho worker. Worker không truy cập DB trực tiếp, chỉ gọi các endpoint này."""
 from __future__ import annotations
 
 import hmac
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Request, Response
 from fastapi.responses import FileResponse
 
-from storyforge.protocol import (AI_KINDS, SCHEMA_VERSION, ClaimedJob, ClaimRequest, CompleteRequest,
-                                 FailRequest, HeartbeatResponse)
+from storyforge.protocol import (AI_KINDS, SCHEMA_VERSION, ClaimedJob, ClaimRequest, CompleteRequest, FailRequest,
+                                 HeartbeatRequest, HeartbeatResponse)
 
 from . import assets, jobs
 from .config import get_settings
@@ -31,19 +31,21 @@ def ping(_: str = Depends(auth)) -> dict:
 @router.post("/claim", response_model=None)
 def claim(req: ClaimRequest, _: str = Depends(auth)):
     if req.schema_version != SCHEMA_VERSION:
-        raise HTTPException(409, f"Worker schema {req.schema_version} khác app {SCHEMA_VERSION}")
+        raise HTTPException(409, f"Worker dùng giao thức v{req.schema_version}, app dùng v{SCHEMA_VERSION}. "
+                                 "Hãy cập nhật cùng phiên bản StoryForge.")
     caps = [c for c in req.capabilities if c in AI_KINDS]
     jobs.touch_worker(req.worker_id, req.name, caps, req.loaded_models, req.model_ids)
     j = jobs.claim(req.worker_id, caps, req.loaded_models)
     if not j:
         return Response(status_code=204)
     return ClaimedJob(id=j["id"], kind=j["kind"], payload=jl(j["payload_json"], {}), model_hint=j["model_hint"],
-                      attempts=j["attempts"]).model_dump()
+                      attempts=j["attempts"], lease_seconds=j["lease_seconds"]).model_dump()
 
 
 @router.post("/jobs/{job_id}/heartbeat", response_model=HeartbeatResponse)
-def heartbeat(job_id: int, worker_id: str = Depends(auth)):
-    return HeartbeatResponse(**jobs.heartbeat(job_id, worker_id))
+def heartbeat(job_id: int, req: HeartbeatRequest | None = Body(default=None), worker_id: str = Depends(auth)):
+    req = req or HeartbeatRequest()
+    return HeartbeatResponse(**jobs.heartbeat(job_id, worker_id, req.progress, req.message))
 
 
 @router.get("/assets/{asset_id}")
@@ -51,7 +53,8 @@ def get_asset(asset_id: int, _: str = Depends(auth)):
     a = db.get("asset", asset_id)
     if not a:
         raise HTTPException(404)
-    return FileResponse(assets.abs_path(a), media_type=a["mime"], filename=Path(a["path"]).name)
+    return FileResponse(assets.abs_path(a), media_type=a["mime"], filename=Path(a["path"]).name,
+                        headers={"X-Asset-Sha256": a["sha256"]})
 
 
 @router.post("/jobs/{job_id}/artifact")
@@ -84,5 +87,5 @@ def fail(job_id: int, req: FailRequest, worker_id: str = Depends(auth)):
     j = db.get("job", job_id)
     if not j or j["worker_id"] != worker_id:
         raise HTTPException(409, "Job không còn thuộc worker này")
-    jobs.fail(job_id, req.error, req.retryable)
+    jobs.fail(job_id, req.error, req.retryable, req.cancelled)
     return {"ok": True}

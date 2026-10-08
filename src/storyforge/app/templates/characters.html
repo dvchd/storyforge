@@ -1,8 +1,13 @@
 {% extends "base.html" %}
 {% import "_macros.html" as m %}
 {% block content %}
-<h1>Nhân vật</h1>
-{% for c in chars %}{{ m.character_row(c) }}{% else %}<p class="muted">Chưa có nhân vật.</p>{% endfor %}
+<div class="bar"><h1>Nhân vật</h1>
+  <form method="post" action="/p/{{ p.id }}/dedupe/scan" class="inline"><button class="ghost">Quét tên gần giống</button></form>
+  <form method="post" action="/p/{{ p.id }}/dedupe/llm" class="inline"><button class="ghost" title="Gửi danh sách cho LLM rà soát biệt danh, cách xưng hô">Nhờ LLM rà trùng</button></form>
+  <a href="/p/{{ p.id }}/bible.md" target="_blank">Hồ sơ (.md)</a></div>
+{% set suggestions = suggestions|selectattr('table', 'equalto', 'character')|list %}
+{% include "_suggestions.html" %}
+<div class="kbd-scope">{% for c in chars %}{{ m.character_row(c) }}{% else %}<p class="muted">Chưa có nhân vật.</p>{% endfor %}</div>
 <details class="card"><summary>Thêm nhân vật thủ công</summary>
   <form method="post" action="/p/{{ p.id }}/characters/new" class="stack">
     <label>Tên <input name="name" required></label><label>Tên gọi khác <input name="aliases"></label>

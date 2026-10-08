@@ -3,14 +3,19 @@
 {% block content %}
 <h1>{{ c.name }}</h1>
 {{ m.character_row(c) }}
-<details class="card"><summary>Gộp nhân vật này vào nhân vật khác (khi LLM tạo trùng)</summary>
-  <form method="post" action="/character/{{ c.id }}/merge" class="inline">
-    <input name="into" type="number" placeholder="ID nhân vật đích" required><button>Gộp</button></form></details>
+{% if c.notes %}<div class="card small"><b>Ghi chú:</b> {{ c.notes }}</div>{% endif %}
+<details class="card"><summary>Gộp nhân vật khác vào {{ c.name }}</summary>
+  <form method="post" action="/merge/merge_character" class="inline" onsubmit="return confirm('Gộp? Thao tác không hoàn tác được.')">
+    <input type="hidden" name="keep" value="{{ c.id }}">
+    <select name="merge">{% for o in others %}<option value="{{ o.id }}">{{ o.name }} (#{{ o.id }}, ch.{{ o.first_chapter }})</option>{% endfor %}</select>
+    <button>Gộp vào {{ c.name }}</button></form></details>
 <h2>Dòng thời gian trạng thái</h2>
+<p class="muted small">Dòng tô vàng là chương có thay đổi. "Dấu vết vĩnh viễn" làm đổi ảnh tham chiếu mặt ở mọi chương sau.</p>
 <table class="tbl small"><tr><th>Chương</th>{% for f in FIELDS %}<th>{{ FIELD_LABELS[f] }}</th>{% endfor %}</tr>
-{% for t in timeline %}<tr class="{{ 'chg' if t.changed else '' }}"><td>{{ t.chapter.idx }}</td>{% for f in FIELDS %}<td>{{ t.state.get(f,'') }}</td>{% endfor %}</tr>{% endfor %}</table>
+{% for t in timeline %}<tr class="{{ 'chg' if t.changed else '' }}"><td><a href="/p/{{ p.id }}/c/{{ t.chapter.id }}?tab=state">{{ t.chapter.idx }}</a></td>{% for f in FIELDS %}<td>{{ t.state.get(f,'') }}</td>{% endfor %}</tr>{% endfor %}</table>
+{% if appearances %}<p class="small">Xuất hiện trong khung hình ở chương: {% for a in appearances %}<a href="/p/{{ p.id }}/c/{{ a.id }}?tab=prod">{{ a.idx }}</a>{{ ', ' if not loop.last }}{% endfor %}</p>{% endif %}
 <h2>Ảnh tham chiếu</h2>
-<div class="gallery">{% for r in refs %}{{ m.ref_card(r) }}{% else %}<p class="muted">Chưa có.</p>{% endfor %}</div>
+<div class="gallery kbd-scope">{% for r in refs %}{{ m.ref_card(r) }}{% else %}<p class="muted">Chưa có.</p>{% endfor %}</div>
 <h2>Sự kiện</h2>
-{% for e in events %}{{ m.event_row(e) }}{% endfor %}
+<div class="kbd-scope">{% for e in events %}{{ m.event_row(e) }}{% endfor %}</div>
 {% endblock %}

@@ -1,7 +1,7 @@
-"""Dang ky adapter theo (kind, type)."""
+"""Đăng ký adapter theo (kind, type)."""
 from __future__ import annotations
 
-from .base import Adapter, AdapterResult, JobContext, RetryableError
+from .base import Adapter, AdapterResult, Cancelled, JobContext, RetryableError
 from .command import CommandImage, CommandRemoveBg, CommandTTS
 from .mock import MockImage, MockLLM, MockRemoveBg, MockTTS
 from .openai_llm import OpenAICompatLLM
@@ -12,7 +12,7 @@ REGISTRY: dict[tuple[str, str], type[Adapter]] = {
     ("llm.chat", "openai"): OpenAICompatLLM,
     ("image.generate", "mock"): MockImage,
     ("image.generate", "command"): CommandImage,
-    ("image.generate", "mflux"): CommandImage,       # mflux chay qua dong lenh
+    ("image.generate", "mflux"): CommandImage,       # mflux chạy qua dòng lệnh
     ("image.generate", "diffusers"): DiffusersImage,
     ("tts.synthesize", "mock"): MockTTS,
     ("tts.synthesize", "edge_tts"): EdgeTTS,
@@ -31,4 +31,4 @@ def build(cfg: dict) -> Adapter:
     return REGISTRY[key](cfg)
 
 
-__all__ = ["Adapter", "AdapterResult", "JobContext", "RetryableError", "REGISTRY", "build"]
+__all__ = ["Adapter", "AdapterResult", "Cancelled", "JobContext", "RetryableError", "REGISTRY", "build"]

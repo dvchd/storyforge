@@ -1,11 +1,12 @@
-"""Client HTTP cua worker. Chi dung API /api/worker cua app."""
+"""Client HTTP của worker. Chỉ dùng API /api/worker của app."""
 from __future__ import annotations
 
 from pathlib import Path
 
 import httpx
 
-from storyforge.protocol import SCHEMA_VERSION, ClaimedJob, ClaimRequest, CompleteRequest, FailRequest
+from storyforge.protocol import (SCHEMA_VERSION, ClaimedJob, ClaimRequest, CompleteRequest, FailRequest,
+                                 HeartbeatRequest)
 
 
 class WorkerClient:
@@ -28,23 +29,27 @@ class WorkerClient:
         r = self.http.post("/api/worker/claim", json=req.model_dump())
         if r.status_code == 204:
             return None
+        if r.status_code == 409:
+            raise RuntimeError(r.json().get("detail", "Khác phiên bản giao thức"))
         r.raise_for_status()
         return ClaimedJob(**r.json())
 
-    def heartbeat(self, job_id: int) -> bool:
-        """Tra ve True neu app yeu cau huy job."""
-        r = self.http.post(f"/api/worker/jobs/{job_id}/heartbeat")
+    def heartbeat(self, job_id: int, progress: float | None = None, message: str = "") -> bool:
+        """Gia hạn thuê job, gửi tiến độ. Trả True nếu app yêu cầu hủy."""
+        r = self.http.post(f"/api/worker/jobs/{job_id}/heartbeat",
+                           json=HeartbeatRequest(progress=progress, message=message).model_dump())
         r.raise_for_status()
         return bool(r.json().get("cancel"))
 
-    def fetch_asset(self, asset_id: int, dest: Path) -> Path:
+    def fetch_asset(self, asset_id: int, dest: Path) -> str:
+        """Tải file, trả sha256 app khai báo (để worker kiểm tra toàn vẹn)."""
         with self.http.stream("GET", f"/api/worker/assets/{asset_id}") as r:
             r.raise_for_status()
             dest.parent.mkdir(parents=True, exist_ok=True)
             with dest.open("wb") as f:
                 for chunk in r.iter_bytes():
                     f.write(chunk)
-        return dest
+            return r.headers.get("x-asset-sha256", "")
 
     def upload(self, job_id: int, path: Path) -> str:
         r = self.http.post(f"/api/worker/jobs/{job_id}/artifact", params={"name": path.name},

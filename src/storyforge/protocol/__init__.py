@@ -1,7 +1,7 @@
-"""Hop dong duy nhat giua app va worker.
+"""Hợp đồng duy nhất giữa app và worker.
 
-App va worker chi giao tiep qua cac schema trong goi nay. Moi payload mang
-SCHEMA_VERSION de nang cap mot ben khong lam hong ben kia.
+App và worker chỉ giao tiếp qua các schema trong gói này. Mỗi payload mang
+SCHEMA_VERSION; app từ chối worker khác phiên bản để tránh hỏng dữ liệu.
 """
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 class JobKind(str, Enum):
@@ -20,16 +20,26 @@ class JobKind(str, Enum):
     TTS_SYNTHESIZE = "tts.synthesize"
 
 
-# Cac viec khong can AI, chay ngay trong tien trinh app (ffmpeg, Pillow).
+# Việc không cần AI, chạy ngay trong tiến trình app (ffmpeg, Pillow).
 LOCAL_KINDS = ("local.render_video", "local.compose_comic")
 AI_KINDS = tuple(k.value for k in JobKind)
+
+# Thời gian thuê mặc định (giây) theo loại job. Worker gửi heartbeat khoảng lease/3.
+DEFAULT_LEASE = {
+    "llm.chat": 900,
+    "image.generate": 1800,
+    "image.remove_bg": 600,
+    "tts.synthesize": 600,
+    "local.render_video": 3600,
+    "local.compose_comic": 1800,
+}
 
 
 # ---------------------------------------------------------------- payloads
 class RefImage(BaseModel):
     asset_id: int
-    role: str = ""          # mo ta vai tro, vi du "face of Lam An"
-    sha256: str = ""        # worker dung de cache file da tai
+    role: str = ""          # vai trò, ví dụ "the face of Lam An"
+    sha256: str = ""        # worker dùng để cache và kiểm tra toàn vẹn file
 
 
 class LlmChatPayload(BaseModel):
@@ -39,7 +49,7 @@ class LlmChatPayload(BaseModel):
     schema_name: str | None = None
     temperature: float = 0.2
     max_tokens: int | None = None
-    # Thong tin phu, adapter that bo qua; adapter mock dung de gia lap.
+    # Thông tin phụ: adapter thật bỏ qua, adapter giả lập dùng để mô phỏng.
     meta: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -80,15 +90,15 @@ PAYLOAD_MODELS: dict[str, type[BaseModel]] = {
 # ----------------------------------------------------------------- outputs
 class LlmChatOutput(BaseModel):
     text: str
-    usage: dict[str, Any] = Field(default_factory=dict)
+    usage: dict[str, Any] = Field(default_factory=dict)   # prompt_tokens, completion_tokens
 
 
 class ImageOutput(BaseModel):
-    files: list[str]                 # ten artifact da upload
+    files: list[str]
     seed: int | None = None
 
 
-class SentenceTiming(BaseModel):
+class Timing(BaseModel):
     start: float
     end: float
     text: str
@@ -97,7 +107,8 @@ class SentenceTiming(BaseModel):
 class TtsOutput(BaseModel):
     file: str
     duration: float
-    sentences: list[SentenceTiming] = Field(default_factory=list)
+    sentences: list[Timing] = Field(default_factory=list)
+    words: list[Timing] = Field(default_factory=list)      # nếu engine TTS trả mốc từng từ
 
 
 # ------------------------------------------------------------- worker API
@@ -116,7 +127,18 @@ class ClaimedJob(BaseModel):
     payload: dict[str, Any]
     model_hint: str = ""
     attempts: int = 1
+    lease_seconds: int = 600
     schema_version: int = SCHEMA_VERSION
+
+
+class HeartbeatRequest(BaseModel):
+    progress: float | None = None        # 0..1
+    message: str = ""
+
+
+class HeartbeatResponse(BaseModel):
+    ok: bool = True
+    cancel: bool = False
 
 
 class CompleteRequest(BaseModel):
@@ -128,11 +150,7 @@ class CompleteRequest(BaseModel):
 class FailRequest(BaseModel):
     error: str
     retryable: bool = True
-
-
-class HeartbeatResponse(BaseModel):
-    ok: bool = True
-    cancel: bool = False
+    cancelled: bool = False
 
 
 __all__ = [n for n in dir() if not n.startswith("_")]

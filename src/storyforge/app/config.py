@@ -1,4 +1,4 @@
-"""Cau hinh app doc tu bien moi truong. Khong phu thuoc thu vien ngoai."""
+"""Cấu hình app đọc từ biến môi trường."""
 from __future__ import annotations
 
 import os
@@ -17,9 +17,11 @@ class Settings:
     ffmpeg: str = "ffmpeg"
     ui_password: str = ""
     font_path: str = ""
-    lease_seconds: int = 180
     start_local_runner: bool = True
-    extra: dict = field(default_factory=dict)
+    # Job chờ lâu được cộng thêm 1 điểm ưu tiên mỗi aging_seconds, tối đa aging_cap.
+    aging_seconds: int = 300
+    aging_cap: int = 5
+    lease: dict = field(default_factory=dict)
 
     @property
     def db_path(self) -> Path:
@@ -32,6 +34,18 @@ class Settings:
     @property
     def tmp_dir(self) -> Path:
         return self.data_dir / "tmp"
+
+    @property
+    def backup_dir(self) -> Path:
+        return self.data_dir / "backups"
+
+    @property
+    def ffprobe(self) -> str:
+        p = Path(self.ffmpeg)
+        cand = p.with_name(p.name.replace("ffmpeg", "ffprobe"))
+        if cand.exists():
+            return str(cand)
+        return shutil.which("ffprobe") or "ffprobe"
 
 
 def _token(data_dir: Path) -> str:
@@ -57,11 +71,10 @@ def load_settings(data_dir: str | os.PathLike | None = None, **overrides) -> Set
         ffmpeg=os.environ.get("STORYFORGE_FFMPEG", "") or shutil.which("ffmpeg") or "ffmpeg",
         ui_password=os.environ.get("STORYFORGE_UI_PASSWORD", ""),
         font_path=os.environ.get("STORYFORGE_FONT", ""),
-        lease_seconds=int(os.environ.get("STORYFORGE_LEASE", "180")),
     )
     for k, v in overrides.items():
         setattr(s, k, v)
-    for p in (s.assets_dir, s.tmp_dir):
+    for p in (s.assets_dir, s.tmp_dir, s.backup_dir):
         p.mkdir(parents=True, exist_ok=True)
     return s
 
@@ -71,7 +84,7 @@ SETTINGS: Settings | None = None
 
 def get_settings() -> Settings:
     if SETTINGS is None:
-        raise RuntimeError("Settings chua duoc khoi tao")
+        raise RuntimeError("Settings chưa được khởi tạo")
     return SETTINGS
 
 

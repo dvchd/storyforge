@@ -1,7 +1,7 @@
-# Worker gia lap: chay toan bo quy trinh khong can model AI.
+# Worker giả lập: chạy toàn bộ quy trình không cần model AI.
 [server]
 url = "http://127.0.0.1:8765"
-token = "DAN_WORKER_TOKEN_VAO_DAY"   # xem trang /workers hoac: storyforge-app token
+token = "DAN_WORKER_TOKEN_VAO_DAY"   # trang /workers hoặc: storyforge-app token
 
 [worker]
 id = "mock-1"

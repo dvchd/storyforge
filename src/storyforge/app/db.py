@@ -1,7 +1,8 @@
-"""Lop du lieu mong tren sqlite3 cua thu vien chuan.
+"""Lớp dữ liệu mỏng trên sqlite3 của thư viện chuẩn.
 
-Khong dung ORM de giam phu thuoc va chay giong nhau tren Windows, macOS, Linux.
-Moi luong dung mot ket noi rieng, bat WAL de app va API worker doc ghi dong thoi.
+Không dùng ORM để giảm phụ thuộc và chạy giống nhau trên Windows, macOS, Linux.
+Mỗi luồng một kết nối riêng, bật WAL để app và API worker đọc ghi đồng thời.
+Schema có phiên bản; xem migrations.py.
 """
 from __future__ import annotations
 
@@ -13,7 +14,10 @@ import time
 from pathlib import Path
 from typing import Any, Iterator
 
+SCHEMA_VERSION = 2
+
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS project(
   id INTEGER PRIMARY KEY,
   name TEXT NOT NULL,
@@ -52,16 +56,31 @@ CREATE TABLE IF NOT EXISTS character(
   aliases_json TEXT NOT NULL DEFAULT '[]',
   appearance TEXT NOT NULL DEFAULT '',
   role TEXT NOT NULL DEFAULT '',
+  notes TEXT NOT NULL DEFAULT '',
   first_chapter INTEGER NOT NULL DEFAULT 1,
   status TEXT NOT NULL DEFAULT 'pending',
   flags_json TEXT NOT NULL DEFAULT '[]',
   reviewer TEXT NOT NULL DEFAULT '',
   created_at REAL
 );
+CREATE TABLE IF NOT EXISTS location(
+  id INTEGER PRIMARY KEY,
+  project_id INTEGER NOT NULL REFERENCES project(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  aliases_json TEXT NOT NULL DEFAULT '[]',
+  description TEXT NOT NULL DEFAULT '',
+  first_chapter INTEGER NOT NULL DEFAULT 1,
+  status TEXT NOT NULL DEFAULT 'pending',
+  flags_json TEXT NOT NULL DEFAULT '[]',
+  reviewer TEXT NOT NULL DEFAULT '',
+  created_at REAL
+);
+-- Sự kiện trạng thái cho cả nhân vật và bối cảnh (subject_type).
 CREATE TABLE IF NOT EXISTS state_event(
   id INTEGER PRIMARY KEY,
   project_id INTEGER NOT NULL REFERENCES project(id) ON DELETE CASCADE,
-  character_id INTEGER NOT NULL REFERENCES character(id) ON DELETE CASCADE,
+  subject_type TEXT NOT NULL DEFAULT 'character',
+  subject_id INTEGER NOT NULL,
   chapter_id INTEGER NOT NULL REFERENCES chapter(id) ON DELETE CASCADE,
   chapter_idx INTEGER NOT NULL,
   field TEXT NOT NULL,
@@ -74,18 +93,7 @@ CREATE TABLE IF NOT EXISTS state_event(
   reviewer TEXT NOT NULL DEFAULT '',
   created_at REAL
 );
-CREATE TABLE IF NOT EXISTS location(
-  id INTEGER PRIMARY KEY,
-  project_id INTEGER NOT NULL REFERENCES project(id) ON DELETE CASCADE,
-  name TEXT NOT NULL,
-  variant TEXT NOT NULL DEFAULT 'default',
-  description TEXT NOT NULL DEFAULT '',
-  first_chapter INTEGER NOT NULL DEFAULT 1,
-  status TEXT NOT NULL DEFAULT 'pending',
-  flags_json TEXT NOT NULL DEFAULT '[]',
-  reviewer TEXT NOT NULL DEFAULT '',
-  created_at REAL
-);
+CREATE INDEX IF NOT EXISTS ix_event_subject ON state_event(subject_type, subject_id);
 CREATE TABLE IF NOT EXISTS ref(
   id INTEGER PRIMARY KEY,
   project_id INTEGER NOT NULL REFERENCES project(id) ON DELETE CASCADE,
@@ -105,9 +113,11 @@ CREATE TABLE IF NOT EXISTS ref(
   reviewer TEXT NOT NULL DEFAULT '',
   regen_count INTEGER NOT NULL DEFAULT 0,
   locked INTEGER NOT NULL DEFAULT 0,
+  first_chapter INTEGER NOT NULL DEFAULT 1,
   created_at REAL,
   UNIQUE(owner_type, owner_id, state_key)
 );
+-- Nhịp truyện. Mỗi nhịp có MỘT ảnh gốc dùng chung cho video và truyện tranh.
 CREATE TABLE IF NOT EXISTS beat(
   id INTEGER PRIMARY KEY,
   project_id INTEGER NOT NULL REFERENCES project(id) ON DELETE CASCADE,
@@ -117,6 +127,7 @@ CREATE TABLE IF NOT EXISTS beat(
   para_end INTEGER NOT NULL,
   narration TEXT NOT NULL DEFAULT '',
   location_id INTEGER,
+  variant TEXT NOT NULL DEFAULT 'default',
   cast_json TEXT NOT NULL DEFAULT '[]',
   shot TEXT NOT NULL DEFAULT 'medium',
   action TEXT NOT NULL DEFAULT '',
@@ -124,7 +135,21 @@ CREATE TABLE IF NOT EXISTS beat(
   dialogue_json TEXT NOT NULL DEFAULT '[]',
   status TEXT NOT NULL DEFAULT 'pending',
   flags_json TEXT NOT NULL DEFAULT '[]',
-  reviewer TEXT NOT NULL DEFAULT ''
+  reviewer TEXT NOT NULL DEFAULT '',
+  -- ảnh gốc của nhịp
+  img_width INTEGER NOT NULL DEFAULT 0,
+  img_height INTEGER NOT NULL DEFAULT 0,
+  seed INTEGER NOT NULL DEFAULT 0,
+  prompt_override TEXT NOT NULL DEFAULT '',
+  image_locked INTEGER NOT NULL DEFAULT 0,
+  image_asset_id INTEGER,
+  image_hash TEXT NOT NULL DEFAULT '',
+  image_prompt TEXT NOT NULL DEFAULT '',
+  image_refs_json TEXT NOT NULL DEFAULT '[]',
+  image_status TEXT NOT NULL DEFAULT 'missing',
+  image_flags TEXT NOT NULL DEFAULT '[]',
+  image_regen INTEGER NOT NULL DEFAULT 0,
+  image_reviewer TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS segment(
   id INTEGER PRIMARY KEY,
@@ -133,19 +158,16 @@ CREATE TABLE IF NOT EXISTS segment(
   beat_id INTEGER NOT NULL REFERENCES beat(id) ON DELETE CASCADE,
   idx INTEGER NOT NULL,
   narration TEXT NOT NULL DEFAULT '',
-  seed INTEGER NOT NULL DEFAULT 0,
-  image_asset_id INTEGER,
-  image_hash TEXT NOT NULL DEFAULT '',
-  image_status TEXT NOT NULL DEFAULT 'missing',
-  image_flags TEXT NOT NULL DEFAULT '[]',
-  image_regen INTEGER NOT NULL DEFAULT 0,
+  focus_x REAL NOT NULL DEFAULT 0.5,
+  focus_y REAL NOT NULL DEFAULT 0.5,
+  motion TEXT NOT NULL DEFAULT 'auto',
   audio_asset_id INTEGER,
   audio_hash TEXT NOT NULL DEFAULT '',
   audio_status TEXT NOT NULL DEFAULT 'missing',
   audio_flags TEXT NOT NULL DEFAULT '[]',
   audio_regen INTEGER NOT NULL DEFAULT 0,
   duration REAL NOT NULL DEFAULT 0,
-  sentences_json TEXT NOT NULL DEFAULT '[]',
+  timings_json TEXT NOT NULL DEFAULT '{}',
   reviewer TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS page(
@@ -153,7 +175,8 @@ CREATE TABLE IF NOT EXISTS page(
   project_id INTEGER NOT NULL REFERENCES project(id) ON DELETE CASCADE,
   chapter_id INTEGER NOT NULL REFERENCES chapter(id) ON DELETE CASCADE,
   idx INTEGER NOT NULL,
-  layout TEXT NOT NULL,
+  width INTEGER NOT NULL,
+  height INTEGER NOT NULL,
   asset_id INTEGER
 );
 CREATE TABLE IF NOT EXISTS panel(
@@ -163,15 +186,10 @@ CREATE TABLE IF NOT EXISTS panel(
   page_id INTEGER NOT NULL REFERENCES page(id) ON DELETE CASCADE,
   beat_id INTEGER NOT NULL REFERENCES beat(id) ON DELETE CASCADE,
   slot INTEGER NOT NULL,
-  width INTEGER NOT NULL,
-  height INTEGER NOT NULL,
-  seed INTEGER NOT NULL DEFAULT 0,
-  image_asset_id INTEGER,
-  image_hash TEXT NOT NULL DEFAULT '',
-  image_status TEXT NOT NULL DEFAULT 'missing',
-  image_flags TEXT NOT NULL DEFAULT '[]',
-  image_regen INTEGER NOT NULL DEFAULT 0,
-  reviewer TEXT NOT NULL DEFAULT ''
+  x REAL NOT NULL, y REAL NOT NULL, w REAL NOT NULL, h REAL NOT NULL,
+  focus_x REAL NOT NULL DEFAULT 0.5,
+  focus_y REAL NOT NULL DEFAULT 0.5,
+  flags_json TEXT NOT NULL DEFAULT '[]'
 );
 CREATE TABLE IF NOT EXISTS balloon(
   id INTEGER PRIMARY KEY,
@@ -180,11 +198,21 @@ CREATE TABLE IF NOT EXISTS balloon(
   kind TEXT NOT NULL DEFAULT 'speech',
   character_id INTEGER,
   text TEXT NOT NULL,
-  x REAL NOT NULL,
-  y REAL NOT NULL,
-  w REAL NOT NULL,
-  tail_x REAL,
-  tail_y REAL
+  x REAL NOT NULL, y REAL NOT NULL, w REAL NOT NULL,
+  tail_x REAL, tail_y REAL
+);
+CREATE TABLE IF NOT EXISTS suggestion(
+  id INTEGER PRIMARY KEY,
+  project_id INTEGER NOT NULL REFERENCES project(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL,              -- merge_character | merge_location
+  a_id INTEGER NOT NULL,           -- giữ lại
+  b_id INTEGER NOT NULL,           -- gộp vào a
+  score REAL NOT NULL DEFAULT 0,
+  reason TEXT NOT NULL DEFAULT '',
+  source TEXT NOT NULL DEFAULT 'fuzzy',
+  status TEXT NOT NULL DEFAULT 'open',   -- open | merged | dismissed
+  created_at REAL,
+  UNIQUE(kind, a_id, b_id)
 );
 CREATE TABLE IF NOT EXISTS asset(
   id INTEGER PRIMARY KEY,
@@ -193,6 +221,7 @@ CREATE TABLE IF NOT EXISTS asset(
   path TEXT NOT NULL,
   mime TEXT NOT NULL DEFAULT '',
   sha256 TEXT NOT NULL,
+  size INTEGER NOT NULL DEFAULT 0,
   input_hash TEXT NOT NULL DEFAULT '',
   model_id TEXT NOT NULL DEFAULT '',
   meta_json TEXT NOT NULL DEFAULT '{}',
@@ -210,9 +239,14 @@ CREATE TABLE IF NOT EXISTS job(
   attempts INTEGER NOT NULL DEFAULT 0,
   max_attempts INTEGER NOT NULL DEFAULT 3,
   worker_id TEXT NOT NULL DEFAULT '',
+  lease_seconds INTEGER NOT NULL DEFAULT 600,
   lease_until REAL,
+  progress REAL,
+  progress_msg TEXT NOT NULL DEFAULT '',
   output_json TEXT NOT NULL DEFAULT '',
   model_id TEXT NOT NULL DEFAULT '',
+  tokens_in INTEGER NOT NULL DEFAULT 0,
+  tokens_out INTEGER NOT NULL DEFAULT 0,
   error TEXT NOT NULL DEFAULT '',
   owner_type TEXT NOT NULL,
   owner_id INTEGER NOT NULL,
@@ -253,7 +287,7 @@ def now() -> float:
 
 
 def jl(s: Any, default: Any = None) -> Any:
-    """json.loads an toan."""
+    """json.loads an toàn."""
     if s is None or s == "":
         return default
     if isinstance(s, (dict, list)):
@@ -273,16 +307,18 @@ class Database:
         self.path: str | None = None
         self._local = threading.local()
 
-    def init(self, path: Path) -> None:
+    def init(self, path: Path, backup_dir: Path | None = None) -> None:
+        from . import migrations
+
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         self.path = str(path)
         self._local = threading.local()
-        self.conn().executescript(SCHEMA)
+        migrations.ensure(self, backup_dir or path.parent / "backups")
 
     def conn(self) -> sqlite3.Connection:
         if self.path is None:
-            raise RuntimeError("Database chua init")
+            raise RuntimeError("Database chưa init")
         c = getattr(self._local, "c", None)
         if c is None or getattr(self._local, "path", None) != self.path:
             c = sqlite3.connect(self.path, isolation_level=None, check_same_thread=False, timeout=30)
@@ -294,6 +330,12 @@ class Database:
             self._local.path = self.path
             self._local.depth = 0
         return c
+
+    def close(self) -> None:
+        c = getattr(self._local, "c", None)
+        if c is not None:
+            c.close()
+            self._local.c = None
 
     @contextlib.contextmanager
     def tx(self) -> Iterator[sqlite3.Connection]:
@@ -346,6 +388,9 @@ class Database:
 
     def delete(self, table: str, id_: Any) -> None:
         self.conn().execute(f"DELETE FROM {table} WHERE id=?", (id_,))
+
+    def columns(self, table: str) -> list[str]:
+        return [r[1] for r in self.conn().execute(f"PRAGMA table_info({table})").fetchall()]
 
 
 db = Database()

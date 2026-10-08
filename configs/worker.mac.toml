@@ -1,7 +1,7 @@
-# Worker cho Mac Apple Silicon (vi du Mac Mini M6).
-# - LLM: server tuong thich OpenAI chay san (mlx_lm.server, LM Studio hoac Ollama)
-# - Anh: mflux (MLX, chay GPU cua Mac). Cai: uv tool install --upgrade mflux
-# - TTS: VieNeu-TTS chay CPU (pip install vieneu) hoac Edge TTS (pip install edge-tts)
+# Worker cho Mac Apple Silicon (ví dụ Mac Mini M6). Xem docs/worker.md.
+# - LLM: server tương thích OpenAI chạy sẵn (mlx_lm.server, LM Studio hoặc Ollama)
+# - Ảnh: mflux (MLX, chạy GPU của Mac). Cài: uv tool install --upgrade mflux
+# - TTS: VieNeu-TTS chạy CPU (pip install vieneu) hoặc Edge TTS (pip install edge-tts)
 
 [server]
 url = "http://127.0.0.1:8765"
@@ -11,10 +11,10 @@ timeout = 120
 [worker]
 id = "mac-mini-m6"
 name = "Mac Mini M6"
-# sequential: chi giu mot model nang trong RAM, giai phong model khac truoc khi chay.
-memory_mode = "sequential"
+memory_mode = "sequential"     # chỉ giữ một model nặng trong RAM
 poll_interval = 2
-heartbeat_every = 20
+heartbeat_every = 20           # tự rút ngắn còn thời gian thuê / 3 nếu cần
+cache_mb = 2048                # giới hạn cache ảnh tham chiếu
 # cache_dir = "~/.cache/storyforge-worker"
 
 # ---------------------------------------------------------------- LLM
@@ -26,15 +26,23 @@ kind = "llm.chat"
 type = "openai"
 base_url = "http://127.0.0.1:8080/v1"
 model = "mlx-community/Qwen3-14B-4bit"
-aliases = ["qwen3-14b"]          # khop voi "Model LLM" trong cai dat du an
+aliases = ["qwen3-14b"]          # trùng "Model LLM" trong cài đặt dự án để worker ưu tiên
 api_key = "local"
-json_mode = "object"             # schema | object | none (tuy server ho tro)
+json_mode = "object"             # schema | object | none (tùy server hỗ trợ)
 timeout = 900
 # extra_body = { chat_template_kwargs = { enable_thinking = false } }
 
-# ---------------------------------------------------------------- Anh: FLUX.2 klein 4B qua mflux
-# Ban 4B dung thuong mai duoc (Apache 2.0). Co anh tham chieu thi dung lenh edit.
-# Kiem tra tham so bang: mflux-generate-flux2 --help, mflux-generate-flux2-edit --help
+# Model dự phòng cho lần thử lại cuối (đặt "Model dự phòng" = "qwen3-32b" trong cài đặt dự án)
+# [[adapters]]
+# kind = "llm.chat"
+# type = "openai"
+# base_url = "http://127.0.0.1:8081/v1"
+# model = "mlx-community/Qwen3-32B-4bit"
+# aliases = ["qwen3-32b"]
+
+# ---------------------------------------------------------------- Ảnh: FLUX.2 klein 4B qua mflux
+# Bản 4B dùng thương mại được (Apache 2.0). Có ảnh tham chiếu thì dùng lệnh edit.
+# THAM SỐ MFLUX ĐỔI THEO PHIÊN BẢN: kiểm tra bằng --help, xem docs/mflux.md.
 [[adapters]]
 kind = "image.generate"
 type = "mflux"
@@ -51,32 +59,18 @@ cmd_with_refs = ["mflux-generate-flux2-edit", "--model", "flux2-klein-4b", "-q",
                  "--seed", "{seed}", "--steps", "{steps}", "--output", "{output}"]
 ref_flag = "--image-paths"
 
-# Phuong an khac: Z-Image Turbo (dep, nhanh, khong nhan anh tham chieu). Bo comment de dung.
-# [[adapters]]
-# kind = "image.generate"
-# type = "mflux"
-# model = "z-image-turbo"
-# default_steps = 9
-# cmd = ["mflux-generate-z-image-turbo", "-q", "8", "--prompt", "{prompt}", "--width", "{width}",
-#        "--height", "{height}", "--seed", "{seed}", "--steps", "{steps}", "--output", "{output}"]
-
 # ---------------------------------------------------------------- TTS
 [[adapters]]
 kind = "tts.synthesize"
 type = "vieneu"
 model = "vieneu-v3-turbo"
-voice = "Thiện Minh"             # giong nam mien Bac dung san; de trong de dung mac dinh
-# init = { mode = "v3turbo" }    # tham so khoi tao Vieneu(...)
-# infer = {}                     # tham so them cho infer(...)
+voice = "Thiện Minh"             # giọng nam miền Bắc dựng sẵn; để trống dùng mặc định
+# init = { mode = "v3turbo" }
+# infer = {}
 
-# Edge TTS (can Internet, dich vu khong chinh thuc, xem dieu khoan truoc khi dung thuong mai)
+# Edge TTS (cần Internet, dịch vụ không chính thức, có mốc từng từ cho phụ đề)
 # [[adapters]]
 # kind = "tts.synthesize"
 # type = "edge_tts"
 # model = "edge"
 # voice = "vi-VN-NamMinhNeural"
-
-# ---------------------------------------------------------------- Tach nen (tuy chon)
-# [[adapters]]
-# kind = "image.remove_bg"
-# type = "rembg"

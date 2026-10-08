@@ -1,4 +1,4 @@
-"""Vong lap worker: nhan job, chay adapter, gui ket qua.
+"""Vòng lặp worker: nhận job, chạy adapter, gửi kết quả.
 
 storyforge-worker --config worker.toml
 storyforge-worker --server http://127.0.0.1:8765 --token XXX --mock
@@ -6,6 +6,7 @@ storyforge-worker --server http://127.0.0.1:8765 --token XXX --mock
 from __future__ import annotations
 
 import argparse
+import hashlib
 import logging
 import platform
 import shutil
@@ -21,7 +22,7 @@ import httpx
 
 from storyforge.protocol import ClaimRequest, CompleteRequest, FailRequest
 
-from .adapters import Adapter, JobContext, RetryableError, build
+from .adapters import Adapter, Cancelled, JobContext, RetryableError, build
 from .client import WorkerClient
 
 log = logging.getLogger("storyforge.worker")
@@ -29,19 +30,76 @@ log = logging.getLogger("storyforge.worker")
 MOCK_ADAPTERS = [{"kind": k, "type": "mock"} for k in ("llm.chat", "image.generate", "tts.synthesize", "image.remove_bg")]
 
 
+def _sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _sniff_ext(path: Path) -> str:
+    head = path.read_bytes()[:12]
+    if head.startswith(b"\x89PNG"):
+        return ".png"
+    if head[:3] == b"\xff\xd8\xff":
+        return ".jpg"
+    if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return ".webp"
+    if head[:4] == b"RIFF":
+        return ".wav"
+    return ".bin"
+
+
+class AssetCache:
+    """Cache ảnh tham chiếu theo sha256, kiểm tra toàn vẹn, giới hạn dung lượng (xóa file ít dùng nhất)."""
+
+    def __init__(self, client: WorkerClient, root: Path, max_mb: float = 2048) -> None:
+        self.client, self.root, self.max_bytes = client, root, int(max_mb * 1024 * 1024)
+        root.mkdir(parents=True, exist_ok=True)
+
+    def get(self, asset_id: int, sha: str) -> Path:
+        if sha:
+            hit = next(iter(self.root.glob(sha + ".*")), None)
+            if hit:
+                hit.touch()
+                return hit
+        tmp = self.root / f"dl_{uuid.uuid4().hex}"
+        declared = self.client.fetch_asset(asset_id, tmp)
+        actual = _sha256(tmp)
+        expect = sha or declared
+        if expect and actual != expect:
+            tmp.unlink(missing_ok=True)
+            raise RetryableError(f"Ảnh tham chiếu {asset_id} bị hỏng khi tải (sha256 không khớp)")
+        final = self.root / (actual + _sniff_ext(tmp))
+        tmp.replace(final)
+        self.evict()
+        return final
+
+    def evict(self) -> None:
+        files = [f for f in self.root.iterdir() if f.is_file()]
+        total = sum(f.stat().st_size for f in files)
+        if total <= self.max_bytes:
+            return
+        for f in sorted(files, key=lambda f: f.stat().st_mtime):
+            total -= f.stat().st_size
+            f.unlink(missing_ok=True)
+            if total <= self.max_bytes * 0.8:
+                break
+
+
 class Worker:
     def __init__(self, client: WorkerClient, adapters: list[Adapter], name: str = "",
-                 memory_mode: str = "sequential", cache_dir: Path | None = None, heartbeat_every: float = 20.0) -> None:
+                 memory_mode: str = "sequential", cache_dir: Path | None = None, heartbeat_every: float = 20.0,
+                 cache_mb: float = 2048) -> None:
         self.client = client
         self.adapters = adapters
         self.name = name or platform.node()
-        self.memory_mode = memory_mode       # sequential: chi giu mot model nang trong RAM
-        self.cache_dir = cache_dir or Path(tempfile.gettempdir()) / "storyforge-worker-cache"
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self.memory_mode = memory_mode       # sequential: chỉ giữ một model nặng trong RAM
+        self.cache = AssetCache(client, cache_dir or Path(tempfile.gettempdir()) / "storyforge-worker-cache", cache_mb)
         self.heartbeat_every = heartbeat_every
         self._stop = threading.Event()
 
-    # ----------------------------------------------------------- helpers
     def capabilities(self) -> list[str]:
         return sorted({a.kind for a in self.adapters})
 
@@ -61,19 +119,6 @@ class Worker:
                 return a
         return cands[0]
 
-    def fetch(self, asset_id: int, sha: str) -> Path:
-        name = f"{sha or asset_id}"
-        hits = list(self.cache_dir.glob(name + ".*")) if sha else []
-        if hits:
-            return hits[0]
-        tmp = self.cache_dir / f"dl_{uuid.uuid4().hex}"
-        self.client.fetch_asset(asset_id, tmp)
-        ext = _sniff_ext(tmp)
-        final = self.cache_dir / (name + ext)
-        tmp.replace(final)
-        return final
-
-    # ----------------------------------------------------------- loop
     def run_once(self) -> bool:
         req = ClaimRequest(worker_id=self.client.worker_id, name=self.name, capabilities=self.capabilities(),
                            loaded_models=self.loaded_models(), model_ids=self.model_ids())
@@ -81,20 +126,30 @@ class Worker:
         if job is None:
             return False
         adapter = self.pick(job.kind, job.model_hint)
-        if self.memory_mode == "sequential":
+        if self.memory_mode == "sequential" and adapter.heavy:
             for a in self.adapters:
-                if a is not adapter and a.loaded() and a.type_name not in ("openai", "mock", "edge_tts", "command"):
-                    log.info("Giải phóng %s", a.model)
+                if a is not adapter and a.heavy and a.loaded():
+                    log.info("Giải phóng %s để tải %s", a.model, adapter.model)
                     a.unload()
         work = Path(tempfile.mkdtemp(prefix=f"sf_job{job.id}_"))
-        cancelled = threading.Event()
-        stop_hb = threading.Event()
+        cancelled, stop_hb = threading.Event(), threading.Event()
+        prog = {"p": None, "m": "", "dirty": False}
+        interval = max(2.0, min(self.heartbeat_every, job.lease_seconds / 3))
+
+        def report(frac: float, msg: str = "") -> None:
+            prog.update(p=frac, m=msg, dirty=True)
 
         def hb() -> None:
-            while not stop_hb.wait(self.heartbeat_every):
+            last = time.time()
+            while not stop_hb.wait(1.0):
+                due = time.time() - last >= interval
+                if not due and not (prog["dirty"] and time.time() - last >= 1.5):
+                    continue
                 try:
-                    if self.client.heartbeat(job.id):
+                    prog["dirty"] = False
+                    if self.client.heartbeat(job.id, prog["p"], prog["m"]):
                         cancelled.set()
+                    last = time.time()
                 except Exception:  # noqa: BLE001
                     pass
 
@@ -103,13 +158,17 @@ class Worker:
         t0 = time.time()
         log.info("Job #%s %s -> %s (%s)", job.id, job.kind, adapter.type_name, adapter.model)
         try:
-            ctx = JobContext(workdir=work, fetch_asset=self.fetch, is_cancelled=cancelled.is_set)
+            ctx = JobContext(workdir=work, fetch_asset=self.cache.get, is_cancelled=cancelled.is_set, report=report)
             res = adapter.run(job, ctx)
+            ctx.check_cancel()
             for f in res.files:
                 self.client.upload(job.id, f)
             self.client.complete(job.id, CompleteRequest(output=res.output, model_id=res.model_id or adapter.model,
                                                          elapsed=time.time() - t0))
             log.info("Job #%s xong sau %.1fs", job.id, time.time() - t0)
+        except Cancelled:
+            log.info("Job #%s đã hủy", job.id)
+            self._safe_fail(job.id, "Đã hủy theo yêu cầu", False, True)
         except RetryableError as e:
             log.warning("Job #%s lỗi tạm thời: %s", job.id, e)
             self._safe_fail(job.id, str(e), True)
@@ -121,9 +180,9 @@ class Worker:
             shutil.rmtree(work, ignore_errors=True)
         return True
 
-    def _safe_fail(self, job_id: int, err: str, retryable: bool) -> None:
+    def _safe_fail(self, job_id: int, err: str, retryable: bool, cancelled: bool = False) -> None:
         try:
-            self.client.fail(job_id, FailRequest(error=err, retryable=retryable))
+            self.client.fail(job_id, FailRequest(error=err, retryable=retryable, cancelled=cancelled))
         except Exception:  # noqa: BLE001
             log.exception("Không gửi được lỗi job %s", job_id)
 
@@ -147,19 +206,6 @@ class Worker:
         self._stop.set()
 
 
-def _sniff_ext(path: Path) -> str:
-    head = path.read_bytes()[:12]
-    if head.startswith(b"\x89PNG"):
-        return ".png"
-    if head[:3] == b"\xff\xd8\xff":
-        return ".jpg"
-    if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
-        return ".webp"
-    if head[:4] == b"RIFF":
-        return ".wav"
-    return ".bin"
-
-
 def load_config(path: str | None) -> dict:
     if not path:
         return {}
@@ -171,7 +217,7 @@ def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(prog="storyforge-worker")
     ap.add_argument("--config", help="File worker.toml")
     ap.add_argument("--server", help="Địa chỉ app, ví dụ http://127.0.0.1:8765")
-    ap.add_argument("--token", help="Worker token (xem trang /workers hoặc storyforge-app token)")
+    ap.add_argument("--token", help="Worker token (trang /workers hoặc: storyforge-app token)")
     ap.add_argument("--id", help="ID worker (mặc định tên máy)")
     ap.add_argument("--mock", action="store_true", help="Dùng toàn bộ adapter giả lập")
     ap.add_argument("--once", action="store_true", help="Chạy hết job đang có rồi thoát")
@@ -180,8 +226,7 @@ def main(argv: list[str] | None = None) -> None:
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     cfg = load_config(args.config)
-    srv = cfg.get("server", {})
-    wk = cfg.get("worker", {})
+    srv, wk = cfg.get("server", {}), cfg.get("worker", {})
     url = args.server or srv.get("url", "http://127.0.0.1:8765")
     token = args.token or srv.get("token", "")
     wid = args.id or wk.get("id") or f"{platform.node()}-{uuid.uuid4().hex[:4]}"
@@ -192,9 +237,10 @@ def main(argv: list[str] | None = None) -> None:
     client = WorkerClient(url, token, wid, timeout=float(srv.get("timeout", 120)))
     w = Worker(client, adapters, name=wk.get("name", ""), memory_mode=wk.get("memory_mode", "sequential"),
                cache_dir=Path(wk["cache_dir"]).expanduser() if wk.get("cache_dir") else None,
-               heartbeat_every=float(wk.get("heartbeat_every", 20)))
+               heartbeat_every=float(wk.get("heartbeat_every", 20)), cache_mb=float(wk.get("cache_mb", 2048)))
     try:
-        client.ping()
+        info = client.ping()
+        log.info("Đã kết nối app %s (giao thức v%s)", url, info.get("schema_version"))
     except httpx.HTTPError as e:
         log.error("Không kết nối được app tại %s: %s", url, e)
     if args.once:

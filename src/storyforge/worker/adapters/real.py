@@ -1,30 +1,28 @@
-"""Adapter cho model that. Thu vien chi duoc import khi adapter duoc dung,
-nen may khong cai thu vien do van chay duoc cac adapter khac.
+"""Adapter cho model thật. Thư viện chỉ được import khi adapter được dùng,
+nên máy không cài thư viện đó vẫn chạy được các adapter khác.
 """
 from __future__ import annotations
 
 import asyncio
 import gc
 import re
-from pathlib import Path
 
 from storyforge.protocol import ClaimedJob, ImageGeneratePayload, RemoveBgPayload, TtsPayload
 
-from .base import Adapter, AdapterResult, JobContext, probe_duration
+from .base import Adapter, AdapterResult, Cancelled, JobContext, probe_duration
 
 
-# ======================================================================= diffusers
 class DiffusersImage(Adapter):
-    """Tao anh bang diffusers. Ho tro anh tham chieu voi pipeline nhan tham so image
-    (vi du FLUX.2 klein: black-forest-labs/FLUX.2-klein-4B). Chay CUDA, MPS hoac CPU.
+    """Tạo ảnh bằng diffusers. Hỗ trợ ảnh tham chiếu với pipeline nhận tham số image
+    (ví dụ FLUX.2 klein: black-forest-labs/FLUX.2-klein-4B). Chạy CUDA, MPS hoặc CPU.
     """
     kind = "image.generate"
     type_name = "diffusers"
+    heavy = True
 
     def __init__(self, cfg: dict) -> None:
         super().__init__(cfg)
         self.pipe = None
-        self.device = None
 
     def load(self) -> None:
         if self.pipe is not None:
@@ -40,7 +38,7 @@ class DiffusersImage(Adapter):
             pipe.enable_model_cpu_offload()
         else:
             pipe = pipe.to(dev)
-        self.pipe, self.device = pipe, dev
+        self.pipe = pipe
         self._loaded = True
 
     def unload(self) -> None:
@@ -52,7 +50,7 @@ class DiffusersImage(Adapter):
 
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
-            if hasattr(torch, "mps") and torch.backends.mps.is_available():
+            if torch.backends.mps.is_available():
                 torch.mps.empty_cache()
         except Exception:  # noqa: BLE001
             pass
@@ -63,28 +61,36 @@ class DiffusersImage(Adapter):
 
         self.load()
         p = ImageGeneratePayload(**job.payload)
-        kw: dict = {"prompt": p.prompt, "width": p.width, "height": p.height,
+        steps = int(p.steps or self.cfg.get("default_steps") or 28)
+        kw: dict = {"prompt": p.prompt, "width": p.width, "height": p.height, "num_inference_steps": steps,
                     "generator": torch.Generator(device="cpu").manual_seed(p.seed)}
-        steps = p.steps or self.cfg.get("default_steps")
-        if steps:
-            kw["num_inference_steps"] = int(steps)
         if self.cfg.get("guidance") is not None:
             kw["guidance_scale"] = float(self.cfg["guidance"])
         if p.negative_prompt and self.cfg.get("use_negative", False):
             kw["negative_prompt"] = p.negative_prompt
-        refs = [Image.open(ctx.fetch_asset(r.asset_id, r.sha256)).convert("RGB") for r in p.refs[: int(self.cfg.get("max_refs", 4))]]
+        refs = [Image.open(ctx.fetch_asset(r.asset_id, r.sha256)).convert("RGB")
+                for r in p.refs[: int(self.cfg.get("max_refs", 4))]]
         if refs:
             kw["image"] = refs if len(refs) > 1 else refs[0]
-        img = self.pipe(**kw).images[0]
+
+        def on_step(pipe, i, t, cb_kwargs):  # noqa: ANN001
+            ctx.report((i + 1) / steps, f"bước {i + 1}/{steps}")
+            if ctx.is_cancelled():
+                raise Cancelled("Job đã bị hủy")
+            return cb_kwargs
+
+        try:
+            img = self.pipe(**kw, callback_on_step_end=on_step).images[0]
+        except TypeError:   # pipeline cũ không có callback_on_step_end
+            img = self.pipe(**kw).images[0]
         out = ctx.workdir / f"img_{job.id}.png"
         img.save(out)
         return AdapterResult(output={"files": [out.name], "seed": p.seed}, files=[out], model_id=self.model)
 
 
-# ======================================================================= Edge TTS
 class EdgeTTS(Adapter):
-    """Microsoft Edge TTS (cong cu khong chinh thuc, can Internet, chu y dieu khoan su dung).
-    Giong tieng Viet: vi-VN-HoaiMyNeural, vi-VN-NamMinhNeural.
+    """Microsoft Edge TTS (công cụ không chính thức, cần Internet; xem điều khoản trước khi dùng thương mại).
+    Giọng tiếng Việt: vi-VN-HoaiMyNeural, vi-VN-NamMinhNeural. Trả mốc thời gian từng từ để làm phụ đề.
     """
     kind = "tts.synthesize"
     type_name = "edge_tts"
@@ -94,37 +100,38 @@ class EdgeTTS(Adapter):
 
         p = TtsPayload(**job.payload)
         voice = p.voice or self.cfg.get("voice", "vi-VN-HoaiMyNeural")
-        pct = int(round((p.rate - 1.0) * 100))
-        rate = f"{pct:+d}%"
+        rate = f"{int(round((p.rate - 1.0) * 100)):+d}%"
         out = ctx.workdir / f"tts_{job.id}.mp3"
+        words: list[dict] = []
         sentences: list[dict] = []
 
         async def go() -> None:
             try:
-                com = edge_tts.Communicate(p.text, voice, rate=rate, boundary="SentenceBoundary")
-            except TypeError:  # phien ban cu khong co tham so boundary
+                com = edge_tts.Communicate(p.text, voice, rate=rate, boundary="WordBoundary")
+            except TypeError:
                 com = edge_tts.Communicate(p.text, voice, rate=rate)
             with out.open("wb") as f:
                 async for chunk in com.stream():
                     if chunk["type"] == "audio":
                         f.write(chunk["data"])
-                    elif chunk["type"] in ("SentenceBoundary", "WordBoundary"):
+                    elif chunk["type"] in ("WordBoundary", "SentenceBoundary"):
                         s = chunk["offset"] / 1e7
-                        sentences.append({"start": s, "end": s + chunk["duration"] / 1e7, "text": chunk["text"]})
+                        item = {"start": s, "end": s + chunk["duration"] / 1e7, "text": chunk["text"]}
+                        (words if chunk["type"] == "WordBoundary" else sentences).append(item)
 
         asyncio.run(go())
-        dur = probe_duration(out, str(self.cfg.get("ffprobe", "ffprobe"))) or (sentences[-1]["end"] if sentences else 0.0)
-        return AdapterResult(output={"file": out.name, "duration": dur, "sentences": sentences}, files=[out],
-                             model_id=f"edge:{voice}")
+        dur = probe_duration(out, str(self.cfg.get("ffprobe", "ffprobe"))) or (words[-1]["end"] if words else 0.0)
+        return AdapterResult(output={"file": out.name, "duration": dur, "words": words, "sentences": sentences},
+                             files=[out], model_id=f"edge:{voice}")
 
 
-# ======================================================================= VieNeu
 class VieNeuTTS(Adapter):
-    """VieNeu-TTS (pip install vieneu). Chay CPU qua ONNX, khong can GPU.
-    voice: ten giong dung san (vi du "Thiện Minh"), hoac de trong va dat ref_audio de bat chuoc giong.
+    """VieNeu-TTS (pip install vieneu). Chạy CPU qua ONNX, không cần GPU.
+    voice: tên giọng dựng sẵn (ví dụ "Thiện Minh"); hoặc đặt ref_audio để bắt chước giọng.
     """
     kind = "tts.synthesize"
     type_name = "vieneu"
+    heavy = True
 
     def __init__(self, cfg: dict) -> None:
         super().__init__(cfg)
@@ -155,23 +162,17 @@ class VieNeuTTS(Adapter):
         out = ctx.workdir / f"tts_{job.id}.wav"
         self.tts.save(audio, str(out))
         dur = probe_duration(out) or 0.0
-        sentences = _even_sentences(p.text, dur)
+        parts = [s.strip() for s in re.split(r"(?<=[.!?…])\s+", p.text.replace("\n", " ")) if s.strip()]
+        total = max(1, sum(len(s.split()) for s in parts))
+        sentences, t = [], 0.0
+        for s in parts:
+            d = dur * len(s.split()) / total
+            sentences.append({"start": round(t, 3), "end": round(t + d, 3), "text": s})
+            t += d
         return AdapterResult(output={"file": out.name, "duration": dur, "sentences": sentences}, files=[out],
                              model_id=f"vieneu:{voice or 'default'}")
 
 
-def _even_sentences(text: str, dur: float) -> list[dict]:
-    parts = [s.strip() for s in re.split(r"(?<=[.!?…])\s+", text.replace("\n", " ")) if s.strip()]
-    total = max(1, sum(len(s) for s in parts))
-    out, t = [], 0.0
-    for s in parts:
-        d = dur * len(s) / total
-        out.append({"start": round(t, 3), "end": round(t + d, 3), "text": s})
-        t += d
-    return out
-
-
-# ======================================================================= rembg
 class RembgRemoveBg(Adapter):
     kind = "image.remove_bg"
     type_name = "rembg"
@@ -181,10 +182,6 @@ class RembgRemoveBg(Adapter):
         from rembg import remove  # type: ignore
 
         p = RemoveBgPayload(**job.payload)
-        src = ctx.fetch_asset(p.image.asset_id, p.image.sha256)
         out = ctx.workdir / f"nobg_{job.id}.png"
-        remove(Image.open(src)).save(out)
+        remove(Image.open(ctx.fetch_asset(p.image.asset_id, p.image.sha256))).save(out)
         return AdapterResult(output={"files": [out.name]}, files=[out], model_id="rembg")
-
-
-Path  # giu import cho type checker

@@ -1,18 +1,23 @@
 {% extends "base.html" %}
 {% block content %}
 <h1>Cài đặt dự án</h1>
+{% if request.query_params.get('saved') %}<div class="banner ok">Đã lưu. Thay đổi kích thước hoặc phong cách sẽ làm ảnh hiện có thành "ảnh cũ"; dùng nút "Tạo lại ảnh cũ" ở từng chương.</div>{% endif %}
 <div class="cols">
 <section class="card">
-  <h3>Chung</h3>
   <form method="post" action="/p/{{ p.id }}/settings" class="stack">
+    <h3>Chung</h3>
     <label>Tên <input name="name" value="{{ p.name }}"></label>
-    <label>Loại <select name="mode">{% for k, v in [('video','Video có lời đọc'),('comic','Truyện tranh'),('both','Cả hai')] %}<option value="{{ k }}" {% if p.mode==k %}selected{% endif %}>{{ v }}</option>{% endfor %}</select></label>
+    <label>Loại <select name="mode">{% for k, v in MODE_NAMES.items() %}<option value="{{ k }}" {% if p.mode==k %}selected{% endif %}>{{ v }}</option>{% endfor %}</select></label>
     <label>Phong cách ảnh (tiếng Anh) <textarea name="style_prompt" rows="3">{{ p.style_prompt }}</textarea></label>
+    {% for title, fields in groups %}
+    <details {% if loop.first %}open{% endif %}><summary><b>{{ title }}</b></summary><div class="stack">
     {% for key, label, typ in fields %}
       {% set v = p.settings.get(key) %}
       {% if typ == 'bool' %}<label><input type="checkbox" name="{{ key }}" {% if v %}checked{% endif %}> {{ label }}</label>
       {% elif typ == 'area' %}<label>{{ label }} <textarea name="{{ key }}" rows="3">{{ v or '' }}</textarea></label>
+      {% elif typ.startswith('select:') %}<label>{{ label }} <select name="{{ key }}">{% for opt in typ[7:].split(',') %}{% set k, lb = opt.split('=') %}<option value="{{ k }}" {% if v==k %}selected{% endif %}>{{ lb }}</option>{% endfor %}</select></label>
       {% else %}<label>{{ label }} <input name="{{ key }}" value="{{ '' if v is none else v }}"></label>{% endif %}
+    {% endfor %}</div></details>
     {% endfor %}
     <button>Lưu</button>
   </form>
@@ -20,13 +25,13 @@
 <section class="card">
   <h3>Chính sách duyệt</h3>
   <form method="post" action="/p/{{ p.id }}/policy" class="stack">
-    <label>Cấp duyệt
-      <select name="level">{% for k, v in LEVELS.items() %}<option value="{{ k }}" {% if pp.level==k %}selected{% endif %}>{{ v.label }}</option>{% endfor %}</select></label>
+    <label>Cấp duyệt <select name="level">{% for k, v in LEVELS.items() %}<option value="{{ k }}" {% if pp.level==k %}selected{% endif %}>{{ v.label }}</option>{% endfor %}</select></label>
     <div class="muted small">{% for k, v in LEVELS.items() %}<div><b>{{ v.label }}</b>: {{ v.desc }}</div>{% endfor %}</div>
     <label>Dừng kiểm tra sau mỗi N chương khi tự chạy (0 = tắt) <input name="checkpoint_every" type="number" value="{{ pp.checkpoint_every }}"></label>
     <h4>Ghi đè từng cổng</h4>
+    <p class="muted small">Ghi đè cổng của dự án vẫn áp dụng khi một chương đặt cấp duyệt riêng.</p>
     <table class="tbl small">
-      <tr><th>Cổng</th><th>Ghi đè</th><th>Chế độ</th><th>Gom</th><th>Tỉ lệ mẫu</th><th>Luôn đưa người duyệt khi có cờ</th></tr>
+      <tr><th>Cổng</th><th>Ghi đè</th><th>Chế độ</th><th>Gom</th><th>Tỉ lệ mẫu</th><th>Luôn chờ người khi có cờ</th></tr>
       {% for g in GATES %}{% set ov = pp.gates.get(g) %}{% set e = eff[g] %}
       <tr><td>{{ GATE_LABELS[g] }}</td>
         <td><input type="checkbox" name="{{ g }}_override" {% if ov %}checked{% endif %}></td>
@@ -36,7 +41,6 @@
         <td class="flags">{% for f in FLAGS %}<label class="small"><input type="checkbox" name="{{ g }}_always" value="{{ f }}" {% if f in e.always_review %}checked{% endif %}>{{ FLAG_LABELS[f] }}</label>{% endfor %}</td></tr>
       {% endfor %}
     </table>
-    <p class="muted small">Cột hiển thị giá trị hiệu lực hiện tại. Chỉ cổng có đánh dấu "Ghi đè" mới được lưu đè lên cấp duyệt.</p>
     <button>Lưu chính sách</button>
   </form>
 </section>

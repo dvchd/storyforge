@@ -1,4 +1,4 @@
-"""Tao ung dung FastAPI."""
+"""Tạo ứng dụng FastAPI."""
 from __future__ import annotations
 
 import base64
@@ -22,15 +22,13 @@ HERE = Path(__file__).parent
 
 
 class LocalRunner:
-    """Chay job khong can AI (ffmpeg, ghep trang) trong tien trinh app."""
+    """Chạy job không cần AI (ffmpeg, ghép trang) trong tiến trình app."""
 
     def __init__(self) -> None:
         self._stop = threading.Event()
-        self._t: threading.Thread | None = None
 
     def start(self) -> None:
-        self._t = threading.Thread(target=self._loop, name="local-runner", daemon=True)
-        self._t.start()
+        threading.Thread(target=self._loop, name="local-runner", daemon=True).start()
 
     def stop(self) -> None:
         self._stop.set()
@@ -48,7 +46,7 @@ class LocalRunner:
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or load_settings()
     set_settings(settings)
-    db.init(settings.db_path)
+    db.init(settings.db_path, settings.backup_dir)
     runner = LocalRunner()
 
     @asynccontextmanager
@@ -64,7 +62,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.middleware("http")
     async def basic_auth(request: Request, call_next):
         pw = settings.ui_password
-        if pw and not request.url.path.startswith("/api/worker") and not request.url.path.startswith("/static"):
+        path = request.url.path
+        if pw and not path.startswith("/api/worker") and not path.startswith("/static"):
             h = request.headers.get("authorization", "")
             ok = False
             if h.startswith("Basic "):

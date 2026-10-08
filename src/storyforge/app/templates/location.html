@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m %}
+{% block content %}
+<h1>{{ l.name }}</h1>
+{{ m.location_row(l) }}
+<details class="card"><summary>Gộp bối cảnh khác vào {{ l.name }}</summary>
+  <form method="post" action="/merge/merge_location" class="inline" onsubmit="return confirm('Gộp?')">
+    <input type="hidden" name="keep" value="{{ l.id }}">
+    <select name="merge">{% for o in others %}<option value="{{ o.id }}">{{ o.name }} (#{{ o.id }})</option>{% endfor %}</select>
+    <button>Gộp</button></form></details>
+<h2>Hiện trạng theo chương</h2>
+<table class="tbl small"><tr><th>Chương</th>{% for f in LOC_FIELDS %}<th>{{ LOC_FIELD_LABELS[f] }}</th>{% endfor %}</tr>
+{% for t in timeline %}<tr class="{{ 'chg' if t.changed else '' }}"><td>{{ t.chapter.idx }}</td>{% for f in LOC_FIELDS %}<td>{{ t.state.get(f,'') }}</td>{% endfor %}</tr>{% endfor %}</table>
+<h2>Ảnh tham chiếu theo biến thể / hiện trạng</h2>
+<div class="gallery kbd-scope">{% for r in refs %}{{ m.ref_card(r) }}{% else %}<p class="muted">Chưa có.</p>{% endfor %}</div>
+<h2>Sự kiện</h2>
+<div class="kbd-scope">{% for e in events %}{{ m.event_row(e) }}{% else %}<p class="muted">Chưa có thay đổi.</p>{% endfor %}</div>
+{% endblock %}

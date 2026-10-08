@@ -1,6 +1,6 @@
-"""Schema dau ra LLM va cach dung prompt cho tung tac vu.
+"""Schema đầu ra LLM và cách dựng prompt cho từng tác vụ.
 
-App tu dung prompt va tu kiem tra ket qua. Worker chi chay model.
+App tự dựng prompt và tự kiểm tra kết quả. Worker chỉ chạy model.
 """
 from __future__ import annotations
 
@@ -9,8 +9,6 @@ import re
 from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
-
-from . import state as st
 
 SHOTS = ("wide", "medium", "close")
 
@@ -31,16 +29,20 @@ class ProposedEvent(BaseModel):
     lasts_chapters: int | None = None
     evidence: str = ""
 
-    @field_validator("field")
-    @classmethod
-    def _f(cls, v: str) -> str:
-        return st.normalize_field(v)
-
 
 class NewLocation(BaseModel):
     name: str
+    aliases: list[str] = Field(default_factory=list)
     description: str = ""
-    variant: str = "default"
+
+
+class LocationEvent(BaseModel):
+    location: str
+    field: str = "condition"
+    value: str = ""
+    permanent: bool = False
+    lasts_chapters: int | None = None
+    evidence: str = ""
 
 
 class ChapterExtraction(BaseModel):
@@ -48,6 +50,7 @@ class ChapterExtraction(BaseModel):
     new_characters: list[NewCharacter] = Field(default_factory=list)
     events: list[ProposedEvent] = Field(default_factory=list)
     locations: list[NewLocation] = Field(default_factory=list)
+    location_events: list[LocationEvent] = Field(default_factory=list)
 
 
 class CastItem(BaseModel):
@@ -86,11 +89,22 @@ class BeatOut(BaseModel):
         for s in SHOTS:
             if s in v:
                 return s
-        return "medium"
+        return "close" if "up" in v else "medium"
 
 
 class BeatsOut(BaseModel):
     beats: list[BeatOut]
+
+
+class DupPair(BaseModel):
+    keep: str
+    merge: str
+    reason: str = ""
+
+
+class DedupeOut(BaseModel):
+    characters: list[DupPair] = Field(default_factory=list)
+    locations: list[DupPair] = Field(default_factory=list)
 
 
 # ------------------------------------------------------------ helpers
@@ -98,12 +112,10 @@ _FENCE = re.compile(r"```(?:json)?\s*(.*?)```", re.S)
 
 
 def extract_json(text: str) -> Any:
-    text = (text or "").strip()
+    text = re.sub(r"<think>.*?</think>", "", text or "", flags=re.S).strip()
     m = _FENCE.search(text)
     if m:
         text = m.group(1).strip()
-    # bo phan suy nghi <think>...</think> cua mot so model
-    text = re.sub(r"<think>.*?</think>", "", text, flags=re.S).strip()
     try:
         return json.loads(text)
     except ValueError:
@@ -126,44 +138,75 @@ def schema_of(model: type[BaseModel]) -> dict:
     return model.model_json_schema()
 
 
+def span_issues(beats: list[BeatOut], n: int) -> list[str]:
+    """Kiểm tra beat phủ kín 1..n, liên tiếp, không chồng lấn."""
+    issues = []
+    if not beats:
+        return ["Danh sách beats rỗng"]
+    expect = 1
+    for i, b in enumerate(sorted(beats, key=lambda b: (b.start, b.end)), 1):
+        if b.end < b.start:
+            issues.append(f"beat {i}: end ({b.end}) nhỏ hơn start ({b.start})")
+        if b.start > expect:
+            issues.append(f"bỏ sót đoạn {expect}..{b.start - 1}")
+        elif b.start < expect:
+            issues.append(f"beat {i} (đoạn {b.start}..{b.end}) chồng lấn beat trước")
+        if b.end > n:
+            issues.append(f"beat {i}: end ({b.end}) vượt quá số đoạn ({n})")
+        expect = max(expect, b.end + 1)
+    if expect <= n:
+        issues.append(f"bỏ sót đoạn {expect}..{n} ở cuối chương")
+    return issues
+
+
 # ------------------------------------------------------------ prompts
-EXTRACT_SYSTEM = """Bạn là trợ lý biên tập truyện. Nhiệm vụ: theo dõi nhân vật, bối cảnh và thay đổi ngoại hình của nhân vật qua từng chương để phục vụ vẽ minh họa nhất quán.
+EXTRACT_SYSTEM = """Bạn là trợ lý biên tập truyện. Nhiệm vụ: theo dõi nhân vật, bối cảnh và thay đổi ngoại hình qua từng chương để vẽ minh họa nhất quán.
+
+Chỉ trả về MỘT đối tượng JSON hợp lệ theo schema, không thêm chữ nào khác.
+
+Quy tắc chung:
+- Chỉ ghi điều được nói rõ trong chương. Không suy đoán, không bịa.
+- "evidence" phải trích NGUYÊN VĂN một câu có trong chương.
+- Các trường mô tả thị giác ("appearance", "value", "description") viết bằng tiếng Anh, ngắn gọn, dùng cho model vẽ ảnh.
+- Nhân vật / bối cảnh đã có trong danh sách: dùng đúng tên chính, KHÔNG tạo mới. Gặp tên gọi khác của người đã biết thì vẫn dùng tên chính.
+- Chỉ thêm nhân vật mới khi họ xuất hiện trực tiếp trong cảnh, không thêm người chỉ được nhắc tên.
+
+Sự kiện nhân vật ("events"):
+- "field" thuộc: outfit, hair, injury, mark, age, body, face, accessory, other.
+- "injury": vết thương tạm thời (băng bó, bầm tím). "mark": dấu vết VĨNH VIỄN trên cơ thể (sẹo, hình xăm), ghi rõ vị trí, ví dụ "long scar on right cheek".
+- "value" rỗng "" nghĩa là trạng thái đó kết thúc (tháo băng, cởi áo giáp).
+- "permanent": true cho thay đổi vĩnh viễn. "lasts_chapters": số chương trạng thái tạm thời kéo dài nếu truyện cho biết, không biết thì null.
+
+Bối cảnh:
+- "locations": các nơi xuất hiện trong chương (chưa có trong danh sách). KHÔNG tách bối cảnh theo ngày/đêm/mưa.
+- "location_events": thay đổi lâu dài của bối cảnh, "field" thuộc condition (bị phá hủy, cháy...), decor (trang trí lễ hội...), other.
+
+"summary": tóm tắt chương bằng tiếng Việt, 2 đến 4 câu, giữ các sự kiện quan trọng."""
+
+BEATS_SYSTEM = """Bạn chia một chương truyện thành các nhịp (beat) để minh họa. Mỗi beat là một khung hình.
 
 Chỉ trả về MỘT đối tượng JSON hợp lệ theo schema, không thêm chữ nào khác.
 
 Quy tắc:
-- Chỉ ghi thay đổi được nói rõ trong chương. Không suy đoán, không bịa.
-- "evidence" phải trích NGUYÊN VĂN một câu có trong chương làm bằng chứng.
-- "appearance", "value", "description" viết bằng tiếng Anh, ngắn gọn, mô tả thị giác, dùng cho model vẽ ảnh.
-- "field" chỉ thuộc: outfit, hair, injury, age, body, face, accessory, other.
-- "value" rỗng "" nghĩa là trạng thái đó kết thúc (ví dụ tháo băng, cởi áo giáp).
-- "permanent": true cho thay đổi vĩnh viễn (sẹo, mất tay, đổi màu tóc lâu dài, già đi).
-- "lasts_chapters": số chương một trạng thái tạm thời kéo dài nếu truyện cho biết, không biết thì null.
-- Nhân vật đã có trong danh sách thì dùng đúng tên chính, không tạo trùng. Tên gọi khác thì thêm vào "aliases" khi tạo mới.
-- Chỉ thêm nhân vật mới khi họ xuất hiện trực tiếp trong cảnh. Không thêm người chỉ được nhắc tên.
-- "locations": các bối cảnh xuất hiện trong chương. "variant" là biến thể như "night", "rain", "ruined", mặc định "default".
-- "summary": tóm tắt chương bằng tiếng Việt, 2 đến 4 câu, giữ các sự kiện quan trọng."""
+- Đoạn văn đánh số [1]..[n]. Mỗi beat là một khoảng đoạn liên tiếp "start".."end".
+- BẮT BUỘC: các beat nối tiếp nhau, phủ toàn bộ chương từ 1 đến n, không chồng lấn, không bỏ sót.
+- Mỗi beat thường gồm 1 đến 4 đoạn; cắt khi đổi cảnh, đổi hành động chính hoặc đổi người nói.
+- "location": đúng tên bối cảnh trong danh sách. "variant": ánh sáng/thời tiết của cảnh: default, dawn, day, dusk, night, rain, snow, fog...
+- "cast": tối đa 3 nhân vật thực sự xuất hiện trong khung hình, dùng đúng tên chính. "pose", "expression" bằng tiếng Anh.
+- "shot": wide (toàn cảnh, mở cảnh), medium, close (cận mặt, cảm xúc).
+- "action", "mood": tiếng Anh, mô tả thị giác ngắn gọn để vẽ ảnh.
+- "dialogue": lời thoại nguyên văn bằng ngôn ngữ gốc, kèm "character" là người nói, "kind" là speech, thought hoặc caption."""
 
-BEATS_SYSTEM = """Bạn chia một chương truyện thành các nhịp (beat) để minh họa. Mỗi beat tương ứng một khung hình.
+DEDUPE_SYSTEM = """Bạn rà soát danh sách nhân vật và bối cảnh của một bộ truyện để tìm các mục BỊ TRÙNG (cùng một người / một nơi nhưng bị ghi thành hai mục do viết tắt, biệt danh, cách xưng hô, lỗi chính tả).
 
-Chỉ trả về MỘT đối tượng JSON hợp lệ theo schema, không thêm chữ nào khác.
-
-Quy tắc:
-- Đoạn văn được đánh số [1]..[n]. Mỗi beat là một khoảng đoạn liên tiếp "start".."end".
-- Các beat nối tiếp nhau, phủ toàn bộ chương từ 1 đến n, không chồng lấn, không bỏ sót.
-- Mỗi beat thường gồm 1 đến 4 đoạn, cắt khi đổi cảnh, đổi hành động chính hoặc đổi người nói.
-- "location": dùng đúng tên bối cảnh trong danh sách. "variant" như danh sách hoặc "default".
-- "cast": tối đa 3 nhân vật thực sự xuất hiện trong khung hình, dùng đúng tên chính. "pose" và "expression" bằng tiếng Anh.
-- "shot": wide, medium hoặc close.
-- "action" và "mood": tiếng Anh, mô tả thị giác ngắn gọn để vẽ ảnh, không nhắc tên riêng khó hiểu.
-- "dialogue": lời thoại nguyên văn bằng ngôn ngữ gốc của truyện, kèm "character" là người nói. "kind" là speech, thought hoặc caption."""
+Chỉ trả về MỘT đối tượng JSON. "keep" là tên mục giữ lại (thường xuất hiện sớm hơn), "merge" là tên mục gộp vào. Chỉ liệt kê khi chắc chắn; người khác nhau có tên gần giống thì KHÔNG gộp. "reason" bằng tiếng Việt, ngắn."""
 
 
-def _chars_block(chars: list[dict]) -> str:
+def _chars_block(chars: list[dict], describe) -> str:
     lines = []
     for c in chars:
         aliases = ", ".join(c.get("aliases") or [])
-        s = st.describe(c.get("state") or {})
+        s = describe(c.get("state") or {})
         lines.append(f"- {c['name']}" + (f" (còn gọi: {aliases})" if aliases else "")
                      + (f" | ngoại hình: {c['appearance']}" if c.get("appearance") else "")
                      + (f" | trạng thái hiện tại: {s}" if s else ""))
@@ -171,43 +214,59 @@ def _chars_block(chars: list[dict]) -> str:
 
 
 def _locs_block(locs: list[dict]) -> str:
-    return "\n".join(f"- {l['name']} [{l['variant']}]: {l.get('description', '')}" for l in locs) or "(chưa có)"
+    out = []
+    for l in locs:
+        st = "; ".join(f"{k}: {v}" for k, v in (l.get("state") or {}).items())
+        out.append(f"- {l['name']}: {l.get('description', '')}" + (f" | hiện trạng: {st}" if st else ""))
+    return "\n".join(out) or "(chưa có)"
 
 
 def extract_messages(project: dict, chapter: dict, chars: list[dict], locs: list[dict],
-                     summaries: list[dict], extra: str = "") -> list[dict]:
+                     summaries: list[dict], describe, extra: str = "") -> list[dict]:
     prev = "\n".join(f"Chương {s['idx']}: {s['summary']}" for s in summaries if s.get("summary")) or "(chưa có)"
     example = {
         "summary": "...",
         "new_characters": [{"name": "Tên", "aliases": ["biệt danh"], "appearance": "young man, short black hair, thin", "role": "nhân vật chính"}],
-        "events": [{"character": "Tên", "field": "outfit", "value": "grey monk robe", "permanent": False,
+        "events": [{"character": "Tên", "field": "mark", "value": "long scar on right cheek", "permanent": True,
                     "lasts_chapters": None, "evidence": "câu nguyên văn trong chương"}],
-        "locations": [{"name": "Tên nơi", "description": "misty mountain sect, stone stairs", "variant": "default"}],
+        "locations": [{"name": "Tên nơi", "aliases": [], "description": "misty mountain sect, stone stairs"}],
+        "location_events": [{"location": "Tên nơi", "field": "condition", "value": "burned ruins", "permanent": True,
+                             "lasts_chapters": None, "evidence": "câu nguyên văn"}],
     }
     user = (
         f"PHONG CÁCH TRUYỆN: {project.get('style_prompt') or '(không có)'}\n\n"
-        f"NHÂN VẬT ĐÃ BIẾT (trạng thái tính đến hết chương trước):\n{_chars_block(chars)}\n\n"
+        f"NHÂN VẬT ĐÃ BIẾT (trạng thái tính đến hết chương trước):\n{_chars_block(chars, describe)}\n\n"
         f"BỐI CẢNH ĐÃ BIẾT:\n{_locs_block(locs)}\n\n"
         f"TÓM TẮT CÁC CHƯƠNG TRƯỚC:\n{prev}\n\n"
         f"CHƯƠNG {chapter['idx']}: {chapter.get('title', '')}\n\"\"\"\n{chapter['text']}\n\"\"\"\n\n"
         f"Ví dụ cấu trúc JSON:\n{json.dumps(example, ensure_ascii=False)}"
     )
-    sys = EXTRACT_SYSTEM + (f"\n\nHướng dẫn thêm cho model này:\n{extra}" if extra else "")
+    sys = EXTRACT_SYSTEM + (f"\n\nHướng dẫn thêm:\n{extra}" if extra else "")
     return [{"role": "system", "content": sys}, {"role": "user", "content": user}]
 
 
 def beats_messages(project: dict, chapter: dict, paras: list[str], chars: list[dict], locs: list[dict],
-                   extra: str = "") -> list[dict]:
+                   describe, extra: str = "") -> list[dict]:
     numbered = "\n\n".join(f"[{i}] {p}" for i, p in enumerate(paras, 1))
-    example = {"beats": [{"start": 1, "end": 2, "location": "Tên nơi", "variant": "default",
-                          "cast": [{"character": "Tên", "pose": "standing", "expression": "determined"}],
+    example = {"beats": [{"start": 1, "end": 2, "location": "Tên nơi", "variant": "dawn",
+                          "cast": [{"character": "Tên", "pose": "climbing stairs", "expression": "determined"}],
                           "shot": "wide", "action": "a young man climbs stone stairs toward a temple gate",
-                          "mood": "misty dawn, calm", "dialogue": [{"character": "Tên", "text": "lời thoại", "kind": "speech"}]}]}
+                          "mood": "misty, calm", "dialogue": [{"character": "Tên", "text": "lời thoại", "kind": "speech"}]}]}
     user = (
-        f"NHÂN VẬT (trạng thái tại chương này):\n{_chars_block(chars)}\n\n"
+        f"NHÂN VẬT (trạng thái tại chương này):\n{_chars_block(chars, describe)}\n\n"
         f"BỐI CẢNH:\n{_locs_block(locs)}\n\n"
-        f"CHƯƠNG {chapter['idx']}: {chapter.get('title', '')} ({len(paras)} đoạn)\n\n{numbered}\n\n"
-        f"Ví dụ cấu trúc JSON:\n{json.dumps(example, ensure_ascii=False)}"
+        f"CHƯƠNG {chapter['idx']}: {chapter.get('title', '')} — có {len(paras)} đoạn, beat cuối phải kết thúc ở {len(paras)}.\n\n"
+        f"{numbered}\n\nVí dụ cấu trúc JSON:\n{json.dumps(example, ensure_ascii=False)}"
     )
-    sys = BEATS_SYSTEM + (f"\n\nHướng dẫn thêm cho model này:\n{extra}" if extra else "")
+    sys = BEATS_SYSTEM + (f"\n\nHướng dẫn thêm:\n{extra}" if extra else "")
     return [{"role": "system", "content": sys}, {"role": "user", "content": user}]
+
+
+def dedupe_messages(chars: list[dict], locs: list[dict]) -> list[dict]:
+    cl = "\n".join(f"- {c['name']} (còn gọi: {', '.join(c.get('aliases') or []) or '-'}; từ chương {c['first_chapter']}; "
+                   f"{c.get('appearance') or ''}; {c.get('role') or ''})" for c in chars) or "(trống)"
+    ll = "\n".join(f"- {l['name']} (từ chương {l['first_chapter']}; {l.get('description') or ''})" for l in locs) or "(trống)"
+    example = {"characters": [{"keep": "Lâm An", "merge": "An ca", "reason": "An ca là cách gọi thân mật Lâm An"}],
+               "locations": []}
+    user = (f"NHÂN VẬT:\n{cl}\n\nBỐI CẢNH:\n{ll}\n\nVí dụ JSON:\n{json.dumps(example, ensure_ascii=False)}")
+    return [{"role": "system", "content": DEDUPE_SYSTEM}, {"role": "user", "content": user}]

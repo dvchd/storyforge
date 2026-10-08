@@ -1,6 +1,6 @@
-# Worker cho may NVIDIA. Cai: pip install -e ".[diffusers,edge]"
+# Worker cho máy NVIDIA. Cài: pip install -e ".[diffusers,edge]"
 [server]
-url = "http://192.168.1.10:8765"     # dia chi may chay app
+url = "http://192.168.1.10:8765"     # địa chỉ máy chạy app
 token = "DAN_WORKER_TOKEN_VAO_DAY"
 
 [worker]
@@ -27,8 +27,6 @@ max_refs = 4
 
 [[adapters]]
 kind = "tts.synthesize"
-type = "command"
-model = "my-tts"
-# Vi du goi mot script TTS bat ky; {text_file} chua noi dung, {output} la file ket qua
-cmd = ["python", "my_tts.py", "--in", "{text_file}", "--out", "{output}", "--voice", "{voice}"]
-ext = ".wav"
+type = "edge_tts"
+model = "edge"
+voice = "vi-VN-HoaiMyNeural"

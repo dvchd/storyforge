@@ -1,7 +1,10 @@
-"""Giao dien chung cho moi adapter.
+"""Giao diện chung cho mọi adapter.
 
-Moi adapter chi can mot ham run(job, ctx) -> AdapterResult. Them model moi
-la viet them mot class, app va prompt khong phai sua.
+Mỗi adapter chỉ cần một hàm run(job, ctx) -> AdapterResult. Thêm model mới là viết thêm
+một class; app và prompt không phải sửa.
+
+Trong run(): gọi ctx.report(0..1, "thông điệp") để báo tiến độ, kiểm tra ctx.check_cancel()
+ở các điểm an toàn để dừng khi người dùng bấm Hủy.
 """
 from __future__ import annotations
 
@@ -15,7 +18,11 @@ from storyforge.protocol import ClaimedJob
 
 
 class RetryableError(RuntimeError):
-    """Loi tam thoi (mat mang, het RAM): app se dua job lai hang doi."""
+    """Lỗi tạm thời (mất mạng, hết RAM): app đưa job lại hàng đợi."""
+
+
+class Cancelled(RuntimeError):
+    """Người dùng đã hủy job."""
 
 
 @dataclass
@@ -28,22 +35,26 @@ class AdapterResult:
 @dataclass
 class JobContext:
     workdir: Path
-    fetch_asset: Callable[[int, str], Path]   # (asset_id, sha256) -> duong dan file da tai
+    fetch_asset: Callable[[int, str], Path]          # (asset_id, sha256) -> đường dẫn file đã tải
     is_cancelled: Callable[[], bool] = lambda: False
+    report: Callable[[float, str], None] = lambda frac, msg="": None
+
+    def check_cancel(self) -> None:
+        if self.is_cancelled():
+            raise Cancelled("Job đã bị hủy")
 
 
 class Adapter:
     kind: str = ""
     type_name: str = ""
+    heavy: bool = False        # True: giữ model trong RAM, cần giải phóng khi đổi sang model khác
 
     def __init__(self, cfg: dict[str, Any]) -> None:
         self.cfg = cfg
         self.model = str(cfg.get("model", "") or self.type_name)
-        # cac ten model ma adapter nhan (de khop model_hint cua job)
         self.aliases = [self.model, *[str(a) for a in cfg.get("aliases", [])]]
         self._loaded = False
 
-    # --------------------------------------------------------- lifecycle
     def model_ids(self) -> list[str]:
         return [a for a in self.aliases if a]
 
@@ -56,14 +67,10 @@ class Adapter:
     def unload(self) -> None:
         self._loaded = False
 
-    def matches(self, hint: str) -> bool:
-        return not hint or hint in self.model_ids()
-
     def run(self, job: ClaimedJob, ctx: JobContext) -> AdapterResult:  # pragma: no cover
         raise NotImplementedError
 
 
-# ------------------------------------------------------------- helpers
 def wav_duration(path: Path) -> float | None:
     try:
         with wave.open(str(path), "rb") as w:
@@ -76,13 +83,6 @@ def probe_duration(path: Path, ffprobe: str = "ffprobe") -> float | None:
     d = wav_duration(path) if path.suffix.lower() == ".wav" else None
     if d:
         return d
-    try:
-        import soundfile  # type: ignore
-
-        info = soundfile.info(str(path))
-        return float(info.duration)
-    except Exception:  # noqa: BLE001
-        pass
     try:
         r = subprocess.run([ffprobe, "-v", "error", "-show_entries", "format=duration", "-of",
                             "default=noprint_wrappers=1:nokey=1", str(path)], capture_output=True, text=True, timeout=60)

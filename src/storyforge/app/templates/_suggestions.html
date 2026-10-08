@@ -1,0 +1,16 @@
+{% if suggestions %}
+<section class="card" id="suggestions">
+  <div class="bar"><h3>Gợi ý gộp trùng ({{ suggestions|length }})</h3></div>
+  {% for s in suggestions %}
+  <div class="row sugg">
+    <div class="grow">{{ '👤' if s.table == 'character' else '🏞' }} Giữ <b>{{ s.a.name }}</b> <small>#{{ s.a.id }}, từ ch.{{ s.a.first_chapter }}</small>
+      ← gộp <b>{{ s.b.name }}</b> <small>#{{ s.b.id }}, từ ch.{{ s.b.first_chapter }}</small>
+      <span class="muted small">· {{ s.reason }} · {{ s.source }} · {{ '%.2f'|format(s.score) }}</span></div>
+    <form method="post" action="/merge/{{ s.kind }}" class="inline" onsubmit="return confirm('Gộp {{ s.b.name }} vào {{ s.a.name }}? Sự kiện, nhịp, lời thoại sẽ chuyển sang {{ s.a.name }}.')">
+      <input type="hidden" name="keep" value="{{ s.a.id }}"><input type="hidden" name="merge" value="{{ s.b.id }}"><button class="ok">Gộp</button></form>
+    <form method="post" action="/merge/{{ s.kind }}" class="inline"><input type="hidden" name="keep" value="{{ s.b.id }}"><input type="hidden" name="merge" value="{{ s.a.id }}"><button class="ghost" title="Gộp theo chiều ngược lại">Giữ {{ s.b.name }}</button></form>
+    <button class="ghost" hx-post="/suggestion/{{ s.id }}/dismiss" hx-target="closest .sugg" hx-swap="outerHTML">Không trùng</button>
+  </div>
+  {% endfor %}
+</section>
+{% endif %}
