@@ -1,0 +1,8 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Job #{{ j.id }} · {{ j.kind }} · {{ j.status }}</h1>
+<p>Cho {{ j.owner_type }}:{{ j.owner_id }} · lần {{ j.attempts }}/{{ j.max_attempts }} · worker {{ j.worker_id }} · model {{ j.model_id or j.model_hint }} · {{ j.elapsed|secs }}</p>
+{% if j.error %}<div class="banner bad"><pre>{{ j.error }}</pre></div>{% endif %}
+<h3>Payload</h3><pre class="code">{{ payload }}</pre>
+<h3>Kết quả</h3><pre class="code">{{ output }}</pre>
+{% endblock %}

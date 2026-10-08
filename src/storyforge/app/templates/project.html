@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="bar">
+  <h1>{{ p.name }}</h1>
+  <form method="post" action="/p/{{ p.id }}/autorun" class="inline"><button class="{{ 'ok' if p.autorun else 'ghost' }}">Tự chạy: {{ 'BẬT' if p.autorun else 'TẮT' }}</button></form>
+  <form method="post" action="/p/{{ p.id }}/run-all" class="inline"><button>Chạy tất cả chương</button></form>
+  {% if not p.paused %}<form method="post" action="/p/{{ p.id }}/pause" class="inline"><button class="ghost">Tạm dừng</button></form>{% endif %}
+  <span class="muted">Chế độ: {{ {'video':'Video có lời đọc','comic':'Truyện tranh','both':'Video và truyện tranh'}[p.mode] }} · Cấp duyệt {{ (p.policy_json|fromjson).get('level', '2') }}</span>
+</div>
+<table class="tbl">
+  <thead><tr><th>#</th><th>Chương</th><th>Trạng thái</th><th>Tiến độ</th><th>Chờ duyệt</th><th></th></tr></thead>
+  <tbody>
+  {% for c in chapters %}
+  <tr>
+    <td>{{ c.idx }}</td>
+    <td><a href="/p/{{ p.id }}/c/{{ c.id }}">{{ c.title }}</a> {% if c.needs_recheck %}<span class="flag" title="Trạng thái chương trước đã đổi">cần kiểm tra lại</span>{% endif %}</td>
+    <td><span class="st st-{{ c.status }}">{{ STATUS_LABELS.get(c.status, c.status) }}</span>{% if c.error %}<div class="err small">{{ c.error[:160] }}</div>{% endif %}</td>
+    <td class="small">
+      {% if c.progress.images %}Ảnh {{ c.progress.images_ok }}/{{ c.progress.images }} · Giọng {{ c.progress.audio_ok }}/{{ c.progress.audio }}{% endif %}
+      {% if c.progress.panels %}<br>Khung {{ c.progress.panels_ok }}/{{ c.progress.panels }}{% endif %}
+    </td>
+    <td>{% if c.pending %}<a class="pill warn" href="/p/{{ p.id }}/review?chapter={{ c.id }}">{{ c.pending }}</a>{% endif %}</td>
+    <td class="nowrap">
+      {% if c.status == 'new' %}<form method="post" action="/c/{{ c.id }}/run" class="inline"><button>Chạy</button></form>{% endif %}
+      {% if c.status == 'error' %}<form method="post" action="/c/{{ c.id }}/retry" class="inline"><button>Thử lại</button></form>{% endif %}
+      {% if p.mode in ('video','both') and c.status in ('producing','done') %}<a href="/p/{{ p.id }}/c/{{ c.id }}/preview/video">▶ Video</a>{% endif %}
+      {% if p.mode in ('comic','both') and c.status in ('producing','done') %}<a href="/p/{{ p.id }}/c/{{ c.id }}/preview/comic">▤ Truyện</a>{% endif %}
+      {% if c.video_asset_id %}<a href="{{ media(c.video_asset_id) }}?download=1">MP4</a>{% endif %}
+      {% if c.comic_cbz_asset_id %}<a href="{{ media(c.comic_cbz_asset_id) }}?download=1">CBZ</a>{% endif %}
+    </td>
+  </tr>
+  {% else %}<tr><td colspan="6" class="muted">Chưa có chương. Nhập ở bên dưới.</td></tr>{% endfor %}
+  </tbody>
+</table>
+<section class="card">
+  <h3>Nhập chương</h3>
+  <form method="post" action="/p/{{ p.id }}/import" enctype="multipart/form-data" class="stack">
+    <label>Dán văn bản. Dòng bắt đầu bằng "Chương 1", "Chapter 2"... sẽ tự tách thành chương.
+      <textarea name="text" rows="8"></textarea></label>
+    <label>Hoặc chọn nhiều file .txt (mỗi file một hoặc nhiều chương, sắp theo tên file)
+      <input type="file" name="files" multiple accept=".txt,.md"></label>
+    <button>Nhập</button>
+  </form>
+</section>
+{% endblock %}

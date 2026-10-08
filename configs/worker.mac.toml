@@ -1,0 +1,82 @@
+# Worker cho Mac Apple Silicon (vi du Mac Mini M6).
+# - LLM: server tuong thich OpenAI chay san (mlx_lm.server, LM Studio hoac Ollama)
+# - Anh: mflux (MLX, chay GPU cua Mac). Cai: uv tool install --upgrade mflux
+# - TTS: VieNeu-TTS chay CPU (pip install vieneu) hoac Edge TTS (pip install edge-tts)
+
+[server]
+url = "http://127.0.0.1:8765"
+token = "DAN_WORKER_TOKEN_VAO_DAY"
+timeout = 120
+
+[worker]
+id = "mac-mini-m6"
+name = "Mac Mini M6"
+# sequential: chi giu mot model nang trong RAM, giai phong model khac truoc khi chay.
+memory_mode = "sequential"
+poll_interval = 2
+heartbeat_every = 20
+# cache_dir = "~/.cache/storyforge-worker"
+
+# ---------------------------------------------------------------- LLM
+# mlx_lm.server --model mlx-community/Qwen3-14B-4bit --port 8080
+# Ollama: base_url = "http://127.0.0.1:11434/v1", model = "qwen3:14b"
+# LM Studio: base_url = "http://127.0.0.1:1234/v1"
+[[adapters]]
+kind = "llm.chat"
+type = "openai"
+base_url = "http://127.0.0.1:8080/v1"
+model = "mlx-community/Qwen3-14B-4bit"
+aliases = ["qwen3-14b"]          # khop voi "Model LLM" trong cai dat du an
+api_key = "local"
+json_mode = "object"             # schema | object | none (tuy server ho tro)
+timeout = 900
+# extra_body = { chat_template_kwargs = { enable_thinking = false } }
+
+# ---------------------------------------------------------------- Anh: FLUX.2 klein 4B qua mflux
+# Ban 4B dung thuong mai duoc (Apache 2.0). Co anh tham chieu thi dung lenh edit.
+# Kiem tra tham so bang: mflux-generate-flux2 --help, mflux-generate-flux2-edit --help
+[[adapters]]
+kind = "image.generate"
+type = "mflux"
+model = "flux2-klein-4b"
+aliases = ["flux2-klein-4b"]
+default_steps = 4
+max_refs = 4
+timeout = 1800
+cmd = ["mflux-generate-flux2", "--model", "flux2-klein-4b", "-q", "8",
+       "--prompt", "{prompt}", "--width", "{width}", "--height", "{height}",
+       "--seed", "{seed}", "--steps", "{steps}", "--output", "{output}"]
+cmd_with_refs = ["mflux-generate-flux2-edit", "--model", "flux2-klein-4b", "-q", "8",
+                 "{refs}", "--prompt", "{prompt}", "--width", "{width}", "--height", "{height}",
+                 "--seed", "{seed}", "--steps", "{steps}", "--output", "{output}"]
+ref_flag = "--image-paths"
+
+# Phuong an khac: Z-Image Turbo (dep, nhanh, khong nhan anh tham chieu). Bo comment de dung.
+# [[adapters]]
+# kind = "image.generate"
+# type = "mflux"
+# model = "z-image-turbo"
+# default_steps = 9
+# cmd = ["mflux-generate-z-image-turbo", "-q", "8", "--prompt", "{prompt}", "--width", "{width}",
+#        "--height", "{height}", "--seed", "{seed}", "--steps", "{steps}", "--output", "{output}"]
+
+# ---------------------------------------------------------------- TTS
+[[adapters]]
+kind = "tts.synthesize"
+type = "vieneu"
+model = "vieneu-v3-turbo"
+voice = "Thiện Minh"             # giong nam mien Bac dung san; de trong de dung mac dinh
+# init = { mode = "v3turbo" }    # tham so khoi tao Vieneu(...)
+# infer = {}                     # tham so them cho infer(...)
+
+# Edge TTS (can Internet, dich vu khong chinh thuc, xem dieu khoan truoc khi dung thuong mai)
+# [[adapters]]
+# kind = "tts.synthesize"
+# type = "edge_tts"
+# model = "edge"
+# voice = "vi-VN-NamMinhNeural"
+
+# ---------------------------------------------------------------- Tach nen (tuy chon)
+# [[adapters]]
+# kind = "image.remove_bg"
+# type = "rembg"

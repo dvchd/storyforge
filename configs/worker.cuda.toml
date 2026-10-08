@@ -1,0 +1,34 @@
+# Worker cho may NVIDIA. Cai: pip install -e ".[diffusers,edge]"
+[server]
+url = "http://192.168.1.10:8765"     # dia chi may chay app
+token = "DAN_WORKER_TOKEN_VAO_DAY"
+
+[worker]
+id = "gpu-box"
+memory_mode = "sequential"
+
+[[adapters]]
+kind = "llm.chat"
+type = "openai"
+base_url = "http://127.0.0.1:8000/v1"   # vLLM
+model = "Qwen/Qwen3-14B-AWQ"
+aliases = ["qwen3-14b"]
+json_mode = "schema"
+
+[[adapters]]
+kind = "image.generate"
+type = "diffusers"
+model = "flux2-klein-4b"
+repo = "black-forest-labs/FLUX.2-klein-4B"
+dtype = "bf16"
+default_steps = 4
+max_refs = 4
+# cpu_offload = true
+
+[[adapters]]
+kind = "tts.synthesize"
+type = "command"
+model = "my-tts"
+# Vi du goi mot script TTS bat ky; {text_file} chua noi dung, {output} la file ket qua
+cmd = ["python", "my_tts.py", "--in", "{text_file}", "--out", "{output}", "--voice", "{voice}"]
+ext = ".wav"

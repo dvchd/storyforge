@@ -1,0 +1,20 @@
+# Worker gia lap: chay toan bo quy trinh khong can model AI.
+[server]
+url = "http://127.0.0.1:8765"
+token = "DAN_WORKER_TOKEN_VAO_DAY"   # xem trang /workers hoac: storyforge-app token
+
+[worker]
+id = "mock-1"
+name = "Worker giả lập"
+
+[[adapters]]
+kind = "llm.chat"
+type = "mock"
+
+[[adapters]]
+kind = "image.generate"
+type = "mock"
+
+[[adapters]]
+kind = "tts.synthesize"
+type = "mock"

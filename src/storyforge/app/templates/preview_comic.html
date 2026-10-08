@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="bar"><h1>Xem trước truyện tranh: chương {{ ch.idx }}</h1><a href="/p/{{ p.id }}/c/{{ ch.id }}">← Về chương</a>
+<span class="muted">Kéo bóng thoại để đổi vị trí, nhấp đúp để sửa chữ. Thay đổi lưu ngay.</span></div>
+<div class="pages" x-data="comicEditor({{ pages_json }})">
+  <template x-for="pg in pages" :key="pg.id">
+    <div class="page" style="aspect-ratio: {{ ratio }}">
+      <template x-for="pn in pg.panels" :key="pn.id">
+        <div class="panel" :style="`left:${pn.rect[0]*100}%;top:${pn.rect[1]*100}%;width:${pn.rect[2]*100}%;height:${pn.rect[3]*100}%`" :data-panel="pn.id">
+          <div class="panel-inner">
+            <img x-show="pn.image" :src="pn.image">
+            <div class="noimg" x-show="!pn.image" x-text="pn.status"></div>
+            <template x-for="b in pn.balloons" :key="b.id">
+              <div class="balloon" :class="b.kind" :style="`left:${b.x*100}%;top:${b.y*100}%;width:${b.w*100}%`"
+                   @pointerdown="startDrag($event, b)" @dblclick="editText(b)">
+                <span x-text="b.text"></span>
+                <button class="x" @click.stop="removeBalloon(pn, b)">×</button>
+              </div>
+            </template>
+            <button class="addb" @click="addBalloon(pn)">+ bóng thoại</button>
+          </div>
+        </div>
+      </template>
+    </div>
+  </template>
+</div>
+{% endblock %}

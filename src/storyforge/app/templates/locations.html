@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m %}
+{% block content %}
+<h1>Bối cảnh</h1>
+{% for l in locs %}{{ m.location_row(l) }}{% else %}<p class="muted">Chưa có bối cảnh.</p>{% endfor %}
+<details class="card"><summary>Thêm bối cảnh</summary>
+  <form method="post" action="/p/{{ p.id }}/locations/new" class="stack">
+    <label>Tên <input name="name" required></label><label>Biến thể <input name="variant" value="default"></label>
+    <label>Mô tả (tiếng Anh) <textarea name="description" rows="2"></textarea></label>
+    <label>Từ chương <input name="first_chapter" type="number" value="1"></label><button>Thêm</button></form></details>
+{% endblock %}

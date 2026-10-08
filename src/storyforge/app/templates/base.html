@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}StoryForge{% endblock %}</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+  <script defer src="https://unpkg.com/alpinejs@3.14.8/dist/cdn.min.js"></script>
+  <script src="/static/app.js"></script>
+</head>
+<body hx-boost="false">
+<header class="top">
+  <a class="brand" href="/">StoryForge</a>
+  {% if p is defined and p %}
+  <nav>
+    <a href="/p/{{ p.id }}">{{ p.name }}</a>
+    <a href="/p/{{ p.id }}/review">Duyệt{% if pending and pending.total %} <span class="pill warn">{{ pending.total }}</span>{% endif %}</a>
+    <a href="/p/{{ p.id }}/characters">Nhân vật</a>
+    <a href="/p/{{ p.id }}/locations">Bối cảnh</a>
+    <a href="/p/{{ p.id }}/refs">Tham chiếu</a>
+    <a href="/p/{{ p.id }}/jobs">Hàng đợi{% if jobcounts and (jobcounts.get('queued',0) + jobcounts.get('running',0)) %} <span class="pill">{{ jobcounts.get('queued',0) + jobcounts.get('running',0) }}</span>{% endif %}{% if jobcounts and jobcounts.get('failed') %} <span class="pill bad">{{ jobcounts.failed }}</span>{% endif %}</a>
+    <a href="/p/{{ p.id }}/settings">Cài đặt</a>
+    <a href="/p/{{ p.id }}/audit">Nhật ký</a>
+  </nav>
+  {% endif %}
+  <a class="right" href="/workers">Worker</a>
+</header>
+{% if p is defined and p and p.paused %}
+<div class="banner warn">
+  Dự án đang tạm dừng: {{ p.pause_reason }}
+  <form method="post" action="/p/{{ p.id }}/resume" class="inline"><button>Tiếp tục</button></form>
+</div>
+{% endif %}
+<main>{% block content %}{% endblock %}</main>
+</body>
+</html>

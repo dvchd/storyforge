@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m %}
+{% block content %}
+<h1>Nhân vật</h1>
+{% for c in chars %}{{ m.character_row(c) }}{% else %}<p class="muted">Chưa có nhân vật.</p>{% endfor %}
+<details class="card"><summary>Thêm nhân vật thủ công</summary>
+  <form method="post" action="/p/{{ p.id }}/characters/new" class="stack">
+    <label>Tên <input name="name" required></label><label>Tên gọi khác <input name="aliases"></label>
+    <label>Ngoại hình (tiếng Anh) <textarea name="appearance" rows="2"></textarea></label>
+    <label>Vai trò <input name="role"></label><label>Xuất hiện từ chương <input name="first_chapter" type="number" value="1"></label>
+    <button>Thêm</button></form></details>
+{% endblock %}

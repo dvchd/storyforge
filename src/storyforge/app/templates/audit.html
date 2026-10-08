@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="bar"><h1>Nhật ký duyệt</h1>
+  <a href="?reviewer=" class="{{ 'on' if not reviewer else '' }}">Tất cả</a>
+  <a href="?reviewer=auto" class="{{ 'on' if reviewer=='auto' else '' }}">Máy tự duyệt</a>
+  <a href="?reviewer=user" class="{{ 'on' if reviewer=='user' else '' }}">Người duyệt</a></div>
+<table class="tbl small"><tr><th>Thời gian</th><th>Đối tượng</th><th>Hành động</th><th>Người duyệt</th><th>Ghi chú</th></tr>
+{% for a in rows %}<tr><td>{{ a.created_at|dt }}</td><td>{{ a.entity }}:{{ a.entity_id }}</td><td>{{ a.action }}</td><td>{{ a.reviewer }}</td><td>{{ a.note }}</td></tr>{% endfor %}</table>
+{% endblock %}

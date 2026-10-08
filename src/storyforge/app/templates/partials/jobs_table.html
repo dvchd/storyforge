@@ -1,0 +1,11 @@
+<p class="muted small">{% for k, v in jobcounts.items() %}{{ k }}: {{ v }} · {% endfor %}tự làm mới mỗi 3 giây</p>
+<table class="tbl small">
+<thead><tr><th>#</th><th>Loại</th><th>Cho</th><th>Trạng thái</th><th>Lần</th><th>Worker</th><th>Model</th><th>Thời gian</th><th>Lỗi</th><th></th></tr></thead>
+{% for j in rows %}
+<tr class="j-{{ j.status }}"><td><a href="/job/{{ j.id }}">{{ j.id }}</a></td><td>{{ j.kind }}</td><td>{{ j.owner_type }}:{{ j.owner_id }}</td>
+<td>{{ j.status }}</td><td>{{ j.attempts }}/{{ j.max_attempts }}</td><td>{{ j.worker_id }}</td><td>{{ j.model_id or j.model_hint }}</td>
+<td>{{ j.elapsed|secs }}</td><td class="err">{{ j.error[:160] }}</td>
+<td class="nowrap">{% if j.status in ('failed','cancelled','done') %}<form method="post" action="/job/{{ j.id }}/retry" class="inline"><button class="ghost">Chạy lại</button></form>{% endif %}
+{% if j.status in ('queued','running') %}<form method="post" action="/job/{{ j.id }}/cancel" class="inline"><button class="ghost">Hủy</button></form>{% endif %}</td></tr>
+{% else %}<tr><td colspan="10" class="muted">Không có job.</td></tr>{% endfor %}
+</table>

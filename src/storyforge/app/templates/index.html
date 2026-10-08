@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Dự án</h1>
+<div class="cols">
+<section>
+  {% for p in projects %}
+  <div class="card row">
+    <div class="grow"><a href="/p/{{ p.id }}"><b>{{ p.name }}</b></a>
+      <div class="muted">{{ {'video':'Video có lời đọc','comic':'Truyện tranh','both':'Video và truyện tranh'}[p.mode] }} ·
+        {{ p.done }}/{{ p.chapters }} chương xong {% if p.pending %}· <span class="pill warn">{{ p.pending }} chờ duyệt</span>{% endif %}
+        {% if p.autorun %}· <span class="pill">tự chạy</span>{% endif %}{% if p.paused %}· <span class="pill bad">tạm dừng</span>{% endif %}</div></div>
+    <form method="post" action="/p/{{ p.id }}/delete" onsubmit="return confirm('Xóa dự án và toàn bộ dữ liệu?')"><button class="ghost">Xóa</button></form>
+  </div>
+  {% else %}<p class="muted">Chưa có dự án.</p>{% endfor %}
+</section>
+<section class="card">
+  <h3>Tạo dự án</h3>
+  <form method="post" action="/projects" class="stack">
+    <label>Tên <input name="name" required></label>
+    <label>Loại
+      <select name="mode"><option value="video">Video có lời đọc</option><option value="comic">Truyện tranh</option><option value="both">Cả hai</option></select></label>
+    <label>Cấp duyệt
+      <select name="level">{% for k, v in LEVELS.items() %}<option value="{{ k }}" {% if k=='2' %}selected{% endif %}>{{ v.label }}</option>{% endfor %}</select></label>
+    <label>Phong cách ảnh (tiếng Anh)
+      <textarea name="style_prompt" rows="3" placeholder="Chinese ink wash illustration, soft colors, cinematic lighting"></textarea></label>
+    <button>Tạo</button>
+  </form>
+</section>
+</div>
+{% endblock %}
