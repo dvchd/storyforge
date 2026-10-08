@@ -1,4 +1,4 @@
-"""Tạo một cơ sở dữ liệu theo schema v1 (StoryForge 0.1) để kiểm thử nâng cấp."""
+"""Tạo cơ sở dữ liệu theo schema v1 (StoryForge 0.1) để kiểm thử nâng cấp."""
 from __future__ import annotations
 
 import sqlite3
@@ -65,5 +65,21 @@ def make_v1_db(path: Path) -> None:
     c.execute("INSERT INTO ref(project_id,owner_type,owner_id,state_key,status) VALUES(1,'location',2,'base','approved')")
     c.execute("INSERT INTO beat(id,project_id,chapter_id,idx,para_start,para_end) VALUES(1,1,1,0,1,1)")
     c.execute("INSERT INTO job(project_id,kind,payload_json,status,owner_type,owner_id) VALUES(1,'llm.chat','{}','queued','chapter_extract',3)")
+    c.commit()
+    c.close()
+
+
+def make_v2_db(path: Path) -> None:
+    """DB v0.2: schema hiện tại trừ 3 cột mới của bảng job."""
+    from storyforge.app.db import SCHEMA
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    c = sqlite3.connect(str(path))
+    schema = SCHEMA.replace("  heartbeat_at REAL,\n  last_progress_at REAL,\n  stalls INTEGER NOT NULL DEFAULT 0,\n", "")
+    assert "heartbeat_at" not in schema
+    c.executescript(schema)
+    c.execute("INSERT INTO meta(key,value) VALUES('schema_version','2')")
+    c.execute("INSERT INTO project(id,name,mode) VALUES(1,'v2','comic')")
+    c.execute("INSERT INTO job(project_id,kind,payload_json,owner_type,owner_id) VALUES(1,'llm.chat','{}','x',1)")
     c.commit()
     c.close()

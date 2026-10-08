@@ -52,7 +52,6 @@ MODE_LABELS = {
     "manual": "Luôn chờ người duyệt",
 }
 
-# Cờ do app tự kiểm tra. INFO_FLAGS chỉ mang tính thông tin, không tự chặn duyệt tự động.
 FLAG_LABELS = {
     "new_identity": "Nhân vật / bối cảnh mới",
     "possible_duplicate": "Có thể trùng với mục đã có",
@@ -64,6 +63,7 @@ FLAG_LABELS = {
     "conflict": "Mâu thuẫn với trạng thái hiện có",
     "age_regression": "Tuổi giảm so với trước",
     "redundant": "Trùng với trạng thái hiện có",
+    "non_english_prompt": "Mô tả cho model ảnh không phải tiếng Anh",
     "span_adjusted": "Khoảng đoạn văn đã bị chỉnh lại",
     "too_many_cast": "Quá nhiều nhân vật trong một khung",
     "no_location": "Chưa gắn bối cảnh",
@@ -76,7 +76,7 @@ INFO_FLAGS = {"new_identity", "regenerated", "permanent", "redundant"}
 
 class GatePolicy(BaseModel):
     mode: GateMode = GateMode.MANUAL
-    batch: str = "item"                  # item | chapter
+    batch: str = "item"
     sample_rate: float = 0.1
     always_review: list[str] = Field(default_factory=list)
 
@@ -154,10 +154,7 @@ def chapter_policy(chapter: dict | None) -> dict:
 
 
 def effective(project: dict, chapter: dict | None = None) -> dict[str, GatePolicy]:
-    """Cấp (của chương nếu có, không thì của dự án) -> ghi đè cổng của dự án -> ghi đè cổng của chương.
-
-    Đặt cấp riêng cho chương KHÔNG xóa các ghi đè cổng đã cấu hình ở dự án.
-    """
+    """Cấp (của chương nếu có, không thì của dự án) -> ghi đè cổng của dự án -> ghi đè cổng của chương."""
     pp = project_policy(project)
     cp = chapter_policy(chapter)
     level = str(cp.get("level") or pp.get("level", "2"))

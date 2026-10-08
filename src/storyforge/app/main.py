@@ -13,8 +13,8 @@ from fastapi import FastAPI, Request
 from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 
-from . import engine
-from .config import Settings, load_settings, set_settings
+from . import engine, jobs
+from .config import Settings, get_settings, load_settings, set_settings
 from .db import db
 
 log = logging.getLogger("storyforge")
@@ -22,10 +22,11 @@ HERE = Path(__file__).parent
 
 
 class LocalRunner:
-    """Chạy job không cần AI (ffmpeg, ghép trang) trong tiến trình app."""
+    """Chạy job không cần AI (ffmpeg, ghép trang) và watchdog thu hồi job đứng yên, trong tiến trình app."""
 
     def __init__(self) -> None:
         self._stop = threading.Event()
+        self._last_watch = 0.0
 
     def start(self) -> None:
         threading.Thread(target=self._loop, name="local-runner", daemon=True).start()
@@ -36,6 +37,9 @@ class LocalRunner:
     def _loop(self) -> None:
         while not self._stop.is_set():
             try:
+                if time.time() - self._last_watch >= get_settings().watchdog_every:
+                    self._last_watch = time.time()
+                    jobs.watchdog()
                 if not engine.local_tick():
                     time.sleep(1.0)
             except Exception:  # noqa: BLE001

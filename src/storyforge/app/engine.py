@@ -6,8 +6,7 @@ Sản xuất:     ảnh tham chiếu (mặt, toàn thân, bối cảnh theo bi�
               -> giọng đọc từng đoạn
 Xuất bản:     dựng video (ffmpeg) / ghép trang truyện tranh (Pillow)
 
-Engine chỉ tạo job và xử lý kết quả. Mọi mục đều qua cổng duyệt (policy.decide);
-bước tiếp theo chỉ được tạo sau khi mục trước được duyệt, dù là duyệt tay hay tự động.
+Engine chỉ tạo job và xử lý kết quả. Mọi mục đều qua cổng duyệt (policy.decide).
 """
 from __future__ import annotations
 
@@ -21,7 +20,7 @@ from pydantic import ValidationError
 
 from storyforge.protocol import ImageGeneratePayload, LlmChatPayload, RefImage, TtsPayload
 
-from . import assets, checks, comic, jobs, llm, policy, prompts, state as st, video
+from . import assets, checks, comic, jobs, llm, policy, prompts, state as st, system, validate, video
 from .config import get_settings
 from .db import db, jd, jl, now
 
@@ -30,23 +29,29 @@ log = logging.getLogger("storyforge.engine")
 DEFAULT_SETTINGS: dict = {
     # LLM
     "llm_model": "", "llm_fallback_model": "", "llm_extra": "", "llm_temperature": 0.2, "llm_max_tokens": None,
-    "beats_span_mode": "retry",          # retry: bắt LLM chia lại khi khoảng đoạn sai | adjust: tự sửa và gắn cờ
-    "context_chapters": 3, "dedupe_threshold": 0.84,
+    "beats_span_retries": 1,       # số lần bắt LLM chia lại khi sai khoảng đoạn; hết lượt thì tự sửa + gắn cờ
+    "context_chapters": 3,
+    "dedupe_mode": "fuzzy",        # fuzzy: gợi ý theo tên gần giống | llm_only: chỉ khi bấm "Nhờ LLM rà" | off
+    "dedupe_threshold": 0.90,
+    "check_english": True,
     # Ảnh
     "image_model": "", "image_steps": None, "negative_prompt": "", "image_area": 1048576, "ref_size": 1024,
-    "max_cast_refs": 2, "max_refs": 4,
+    "max_cast_refs": 2, "max_refs": 4, "crop_overlap_min": 0.6,
     # TTS
     "tts_model": "", "tts_voice": "", "tts_rate": 1.0, "language": "vi",
     # Video
     "video_width": 1344, "video_height": 768, "video_fps": 30, "video_encoder": "auto", "video_zoom": 0.10,
     "video_transition": 0.3, "video_gap": 0.35, "video_loudnorm": True,
     # Truyện tranh
-    "comic_format": "page",              # page | webtoon
+    "comic_format": "page",
     "comic_page_width": 1600, "comic_page_height": 2400, "comic_max_panels": 6,
     "comic_margin": 48, "comic_gutter": 24, "webtoon_width": 1080, "webtoon_panels_per_page": 8,
     # Duyệt
     "auto_regen_on_reject": True, "max_regen": 3,
 }
+
+# Điểm lấy nét mặc định theo góc máy: cận mặt lấy cao hơn để không cắt mất đầu.
+SHOT_FOCUS = {"close": (0.5, 0.35), "medium": (0.5, 0.42), "wide": (0.5, 0.5)}
 
 STATUS_ORDER = ["new", "extracting", "review_state", "state_ready", "beating", "review_beats", "producing", "done"]
 STATUS_LABELS = {
@@ -54,7 +59,6 @@ STATUS_LABELS = {
     "state_ready": "Trạng thái xong", "beating": "Đang chia nhịp", "review_beats": "Chờ duyệt nhịp",
     "producing": "Đang sản xuất", "done": "Hoàn tất", "error": "Lỗi",
 }
-STEPS = [("extract", "Trạng thái"), ("beats", "Nhịp"), ("produce", "Sản xuất"), ("publish", "Xuất bản")]
 
 
 def rank(s: str) -> int:
@@ -91,8 +95,7 @@ def audit(pid: int, entity: str, eid: int, action: str, reviewer: str, note: str
 
 def gate_status(p: dict, ch: dict | None, gate: str, flags: list[str], key: str) -> tuple[str, str]:
     gp = policy.effective(p, ch)[gate]
-    rng = random.Random(f"{p['id']}:{gate}:{key}")
-    status = policy.decide(gp, set(flags), rng)
+    status = policy.decide(gp, set(flags), random.Random(f"{p['id']}:{gate}:{key}"))
     return status, (policy.policy_name(p, ch, gate) if status == "approved" else "")
 
 
@@ -134,8 +137,13 @@ def loc_index(pid: int) -> dict[str, dict]:
     return _index(locs(pid))
 
 
+def proper_names(pid: int) -> list[str]:
+    """Tên riêng đã biết: bỏ qua khi kiểm tra mô tả có phải tiếng Anh không."""
+    return [n for r in all_chars(pid, True) + locs(pid, True) for n in [r["name"], *r["aliases"]]]
+
+
 def resolve_name(idx: dict[str, dict], name: str, threshold: float) -> tuple[dict | None, bool]:
-    """Tìm theo tên chuẩn hóa, rồi gần đúng. Trả (bản ghi, có phải khớp gần đúng không)."""
+    """Khớp chuẩn hóa, rồi khớp gần đúng (chỉ khi rất giống). Trả (bản ghi, có phải gần đúng không)."""
     key = checks.norm(name)
     if key in idx:
         return idx[key], False
@@ -156,37 +164,45 @@ def locs_context(pid: int, chapter_idx: int) -> list[dict]:
 def add_suggestion(pid: int, kind: str, keep_id: int, merge_id: int, score: float, reason: str, source: str) -> None:
     if keep_id == merge_id:
         return
-    a, b = keep_id, merge_id
-    if db.one("SELECT id FROM suggestion WHERE kind=? AND ((a_id=? AND b_id=?) OR (a_id=? AND b_id=?))", kind, a, b, b, a):
+    if db.one("SELECT id FROM suggestion WHERE kind=? AND ((a_id=? AND b_id=?) OR (a_id=? AND b_id=?))",
+              kind, keep_id, merge_id, merge_id, keep_id):
         return
-    db.insert("suggestion", project_id=pid, kind=kind, a_id=a, b_id=b, score=score, reason=reason, source=source,
-              status="open", created_at=now())
+    db.insert("suggestion", project_id=pid, kind=kind, a_id=keep_id, b_id=merge_id, score=score, reason=reason,
+              source=source, status="open", created_at=now())
 
 
-def _identity_flags(p: dict, kind: str, name: str, aliases: list[str], existing: list[dict]) -> tuple[list[str], list[str], list[tuple[int, float]]]:
-    """Cờ cho nhân vật/bối cảnh mới: trùng gần đúng, tên gọi khác đụng người khác."""
-    thr = float(p["settings"]["dedupe_threshold"])
+def _identity_flags(p: dict, name: str, aliases: list[str], existing: list[dict]) -> tuple[list[str], list[str], list]:
+    s = p["settings"]
     flags: list[str] = []
     idx = _index(existing)
-    clean_aliases = []
+    clean = []
     for a in aliases:
         if checks.norm(a) in idx:
             flags.append("alias_collision")
         elif a.strip():
-            clean_aliases.append(a.strip())
+            clean.append(a.strip())
     dups = []
-    for r in existing:
-        score = max(checks.name_similarity(n, m) for n in [name, *clean_aliases] for m in [r["name"], *r.get("aliases", [])])
-        if score >= thr:
-            dups.append((r["id"], score))
-    if dups:
-        flags.append("possible_duplicate")
-    return flags, clean_aliases, dups
+    if s.get("dedupe_mode", "fuzzy") == "fuzzy":
+        thr = float(s["dedupe_threshold"])
+        for r in existing:
+            score = max(checks.name_similarity(n, m) for n in [name, *clean] for m in [r["name"], *r.get("aliases", [])])
+            if score >= thr:
+                dups.append((r["id"], score))
+        if dups:
+            flags.append("possible_duplicate")
+    return flags, clean, dups
+
+
+def _lang_flags(p: dict, texts: list[str], names: list[str]) -> list[str]:
+    if not p["settings"].get("check_english", True):
+        return []
+    return ["non_english_prompt"] if any(checks.non_english(t, names) for t in texts if t) else []
 
 
 def create_character(p: dict, ch: dict, name: str, aliases: list[str], appearance: str, role: str,
                      extra_flags: list[str] | None = None) -> dict:
-    flags, aliases, dups = _identity_flags(p, "character", name, aliases, all_chars(p["id"]))
+    flags, aliases, dups = _identity_flags(p, name, aliases, all_chars(p["id"]))
+    flags += _lang_flags(p, [appearance], proper_names(p["id"]) + [name, *aliases])
     flags = sorted(set(["new_identity", *flags, *(extra_flags or [])]))
     status, reviewer = gate_status(p, ch, "identity", flags, f"char:{name}")
     cid = db.insert("character", project_id=p["id"], name=name.strip(), aliases_json=jd(aliases),
@@ -203,7 +219,8 @@ def create_character(p: dict, ch: dict, name: str, aliases: list[str], appearanc
 
 def create_location(p: dict, ch: dict, name: str, aliases: list[str], description: str,
                     extra_flags: list[str] | None = None) -> dict:
-    flags, aliases, dups = _identity_flags(p, "location", name, aliases, locs(p["id"]))
+    flags, aliases, dups = _identity_flags(p, name, aliases, locs(p["id"]))
+    flags += _lang_flags(p, [description], proper_names(p["id"]) + [name, *aliases])
     flags = sorted(set(["new_identity", *flags, *(extra_flags or [])]))
     status, reviewer = gate_status(p, ch, "identity", flags, f"loc:{name}")
     lid = db.insert("location", project_id=p["id"], name=name.strip(), aliases_json=jd(aliases),
@@ -247,15 +264,14 @@ def _retry_llm(job: dict, p: dict, ch: dict, text: str, err: str) -> None:
 
 
 def _event(p: dict, ch: dict, subject_type: str, subject_id: int, field: str, value: str, permanent: bool,
-           lasts: int | None, evidence: str, current: dict, extra_flags: list[str]) -> tuple[int, str, str]:
+           lasts: int | None, evidence: str, current: dict, extra_flags: list[str], names: list[str]) -> tuple[int, str, str]:
     if subject_type == "character":
         flags = checks.event_flags(field, value, permanent, evidence, ch["text"], current)
     else:
-        flags = []
-        if not checks.evidence_found(evidence, ch["text"]):
-            flags.append("evidence_missing")
+        flags = [] if checks.evidence_found(evidence, ch["text"]) else ["evidence_missing"]
         if permanent:
             flags.append("permanent")
+    flags += _lang_flags(p, [st.removal_target(value)], names)
     flags = sorted(set(flags + extra_flags))
     if field == "mark":
         permanent = True
@@ -307,6 +323,7 @@ def handle_extract(job: dict, output: dict) -> None:
                 l = create_location(p, ch, nl.name, nl.aliases, nl.description)
                 for n in [l["name"], *l["aliases"]]:
                     lidx.setdefault(checks.norm(n), l)
+        names = proper_names(p["id"])
         created: list[tuple[int, str, str]] = []
         for ev in data.events:
             c, fuzzy = resolve_name(cidx, ev.character, thr)
@@ -316,18 +333,17 @@ def handle_extract(job: dict, output: dict) -> None:
                 cidx[checks.norm(ev.character)] = c
                 extra = ["unknown_character"]
             field = st.normalize_field(ev.field, ev.permanent)
-            current = st.state_at(c["id"], ch["idx"] - 1)
             created.append(_event(p, ch, "character", c["id"], field, ev.value, ev.permanent, ev.lasts_chapters,
-                                  ev.evidence, current, extra))
+                                  ev.evidence, st.state_at(c["id"], ch["idx"] - 1), extra, names))
         for ev in data.location_events:
             l, fuzzy = resolve_name(lidx, ev.location, thr)
             if l is None:
                 l = create_location(p, ch, ev.location, [], "", ["unknown_location"])
                 lidx[checks.norm(ev.location)] = l
             field = st.normalize_field(ev.field, ev.permanent, "location")
-            current = st.loc_state_at(l["id"], ch["idx"] - 1)
             created.append(_event(p, ch, "location", l["id"], field, ev.value, ev.permanent, ev.lasts_chapters,
-                                  ev.evidence, current, ["unknown_location"] if fuzzy else []))
+                                  ev.evidence, st.loc_state_at(l["id"], ch["idx"] - 1),
+                                  ["unknown_location"] if fuzzy else [], names))
         if gate_batch(p, ch, "state") == "chapter" and any(s != "approved" for _, s, _ in created):
             db.ex("UPDATE state_event SET status='pending', reviewer='' WHERE chapter_id=?", ch["id"])
         else:
@@ -358,7 +374,7 @@ def enqueue_beats(p: dict, ch: dict) -> None:
     lc = locs_context(p["id"], ch["idx"])
     msgs = llm.beats_messages(p, ch, paras, chars, lc, st.describe, s.get("llm_extra", ""))
     payload = _llm_payload(p, msgs, llm.BeatsOut, "BeatsOut", {
-        "task": "beats", "paragraphs": paras,
+        "task": "beats", "paragraphs": paras, "span_retries": 0,
         "known_characters": [{"name": c["name"], "aliases": c["aliases"]} for c in chars],
         "known_locations": [{"name": l["name"], "aliases": l["aliases"]} for l in lc]})
     jobs.enqueue(p["id"], "llm.chat", payload, "chapter_beats", ch["id"], model_hint=s["llm_model"], priority=4)
@@ -395,18 +411,21 @@ def handle_beats(job: dict, output: dict) -> None:
     paras = llm.paragraphs(ch["text"])
     try:
         data = llm.BeatsOut.model_validate(llm.extract_json(text))
-        issues = llm.span_issues(data.beats, len(paras))
-        if issues and not data.beats:
-            raise ValueError(issues[0])
+        if not data.beats:
+            raise ValueError("Danh sách beats rỗng")
     except (ValueError, ValidationError) as e:
         _retry_llm(job, p, ch, text, str(e))
         return
-    if issues and s.get("beats_span_mode", "retry") == "retry" and job["attempts"] < job["max_attempts"]:
+    issues = llm.span_issues(data.beats, len(paras))
+    used = int(jl(job["payload_json"], {}).get("meta", {}).get("span_retries", 0))
+    # Chỉ bắt LLM chia lại số lần giới hạn (mặc định 1): LLM yếu thường lặp lại đúng lỗi cũ, thử tiếp chỉ tốn token.
+    if issues and used < int(s.get("beats_span_retries", 1)):
         msg = (f"Khoảng đoạn văn sai (chương có {len(paras)} đoạn, phải phủ kín 1..{len(paras)}, liên tiếp, "
                f"không chồng lấn):\n- " + "\n- ".join(issues[:12]))
-        if jobs.retry_with_feedback(job, text, msg, s.get("llm_fallback_model", "")):
+        if jobs.retry_with_feedback(job, text, msg, s.get("llm_fallback_model", ""), {"span_retries": used + 1}):
             return
     spans = _normalize_spans(data.beats, len(paras))
+    names = proper_names(p["id"])
     with db.tx():
         db.ex("DELETE FROM beat WHERE chapter_id=?", ch["id"])
         db.ex("DELETE FROM page WHERE chapter_id=?", ch["id"])
@@ -436,6 +455,7 @@ def handle_beats(job: dict, output: dict) -> None:
                     cast.append({"character_id": c["id"], "name": c["name"], "pose": ci.pose, "expression": ci.expression})
             if len(b.cast) > 3:
                 flags.append("too_many_cast")
+            flags += _lang_flags(p, [b.action, b.mood] + [f"{c.pose} {c.expression}" for c in b.cast], names)
             dialogue = [{"character": d.character, "text": d.text, "kind": d.kind} for d in b.dialogue]
             status, reviewer = gate_status(p, ch, "breakdown", flags, f"beat:{ch['id']}:{k}")
             bid = db.insert("beat", project_id=p["id"], chapter_id=ch["id"], idx=k, para_start=a, para_end=b_end,
@@ -459,13 +479,12 @@ def pending_beats(ch: dict) -> int:
     return (db.val("SELECT COUNT(*) FROM beat WHERE chapter_id=? AND status='pending'", ch["id"]) or 0) + pending_identity(ch)
 
 
-# ================================================================ dựng khung sản xuất
+# ================================================================ khung sản xuất
 def _round64(v: float) -> int:
     return max(256, int(round(v / 64)) * 64)
 
 
 def master_size(p: dict, panel_aspect: float | None) -> tuple[int, int]:
-    """Kích thước ảnh gốc của nhịp: đủ để cắt ra cả khung video và khung truyện tranh."""
     s = p["settings"]
     va = int(s["video_width"]) / int(s["video_height"])
     if wants_video(p) and wants_comic(p) and panel_aspect:
@@ -493,6 +512,10 @@ def base_font(page_w: int) -> int:
     return max(16, page_w // 50)
 
 
+def default_focus(shot: str) -> tuple[float, float]:
+    return SHOT_FOCUS.get(shot or "medium", SHOT_FOCUS["medium"])
+
+
 def materialize(p: dict, ch: dict) -> None:
     s = p["settings"]
     beats = db.q("SELECT * FROM beat WHERE chapter_id=? AND status='approved' ORDER BY idx", ch["id"])
@@ -513,27 +536,72 @@ def materialize(p: dict, ch: dict) -> None:
                 bf = base_font(pg["width"])
                 for slot, pn in enumerate(pg["panels"]):
                     b = pn["beat"]
-                    x, y, w, h = comic.panel_px(pn, pg["width"], pg["height"], g["margin"], g["gutter"])
+                    _, _, w, h = comic.panel_px(pn, pg["width"], pg["height"], g["margin"], g["gutter"])
                     aspects[b["id"]] = w / max(1, h)
                     balloons = comic.default_balloons(b, jl(b["dialogue_json"], []), char_ids, w, h, font, bf)
                     flags = ["text_overflow"] if comic.overflow(balloons, w, h, font, bf) else []
+                    fx, fy = default_focus(b["shot"])
                     pid_ = db.insert("panel", project_id=p["id"], chapter_id=ch["id"], page_id=page_id, beat_id=b["id"],
-                                     slot=slot, x=pn["x"], y=pn["y"], w=pn["w"], h=pn["h"], flags_json=jd(flags))
+                                     slot=slot, x=pn["x"], y=pn["y"], w=pn["w"], h=pn["h"], focus_x=fx, focus_y=fy,
+                                     flags_json=jd(flags))
                     for bi, bl in enumerate(balloons):
                         db.insert("balloon", panel_id=pid_, idx=bi, **bl)
         if wants_video(p) and not db.val("SELECT COUNT(*) FROM segment WHERE chapter_id=?", ch["id"]):
             for i, b in enumerate(beats):
+                fx, fy = default_focus(b["shot"])
                 db.insert("segment", project_id=p["id"], chapter_id=ch["id"], beat_id=b["id"], idx=i,
-                          narration=b["narration"])
+                          narration=b["narration"], focus_x=fx, focus_y=fy)
         for b in beats:
             if not b["img_width"]:
                 w, h = master_size(p, aspects.get(b["id"]))
                 db.update("beat", b["id"], img_width=w, img_height=h)
 
 
+def panel_aspect(p: dict, panel: dict) -> float:
+    pg = db.get("page", panel["page_id"])
+    g = comic_geometry(p)
+    _, _, w, h = comic.panel_px(panel, pg["width"], pg["height"], g["margin"], g["gutter"])
+    return w / max(1, h)
+
+
+def crop_info(p: dict, beat: dict, seg: dict | None, panel: dict | None) -> dict:
+    """Hai vùng cắt video / truyện trên ảnh gốc có lệch nhau quá ngưỡng không."""
+    if not (seg and panel and beat["img_width"]):
+        return {"mismatch": False}
+    s = p["settings"]
+    va = int(s["video_width"]) / int(s["video_height"])
+    a = comic.crop_box(beat["img_width"], beat["img_height"], va, seg["focus_x"], seg["focus_y"])
+    b = comic.crop_box(beat["img_width"], beat["img_height"], panel_aspect(p, panel), panel["focus_x"], panel["focus_y"])
+    ov = comic.overlap(a, b)
+    return {"mismatch": ov < float(s["crop_overlap_min"]), "overlap": round(ov, 2), "video_box": a, "panel_box": b}
+
+
+def crop_mismatches(p: dict, chapter_id: int | None = None) -> int:
+    if not (wants_video(p) and wants_comic(p)):
+        return 0
+    sql = ("SELECT b.*, s.id sid, s.focus_x sfx, s.focus_y sfy, pn.id pnid FROM beat b JOIN segment s ON s.beat_id=b.id "
+           "JOIN panel pn ON pn.beat_id=b.id WHERE b.project_id=?")
+    args: list = [p["id"]]
+    if chapter_id:
+        sql += " AND b.chapter_id=?"
+        args.append(chapter_id)
+    n = 0
+    for r in db.q(sql, *args):
+        if crop_info(p, r, {"focus_x": r["sfx"], "focus_y": r["sfy"]}, db.get("panel", r["pnid"]))["mismatch"]:
+            n += 1
+    return n
+
+
 # ================================================================ ảnh tham chiếu
 def _ref_row(owner_type: str, owner_id: int, key: str) -> dict | None:
     return db.one("SELECT * FROM ref WHERE owner_type=? AND owner_id=? AND state_key=?", owner_type, owner_id, key)
+
+
+def _ref_pairs(r: dict) -> list[tuple[int, str]]:
+    out = []
+    for x in jl(r["refs_json"], []):
+        out.append((int(x[0]), str(x[1])) if isinstance(x, list) else (int(x), "reference"))
+    return out
 
 
 def ensure_ref(p: dict, owner_type: str, owner_id: int, key: str, label: str, prompt: str,
@@ -548,8 +616,8 @@ def ensure_ref(p: dict, owner_type: str, owner_id: int, key: str, label: str, pr
                         seed=prompts.seed_for(owner_type, owner_id, key), status="missing",
                         first_chapter=chapter_idx, created_at=now())
         r = db.get("ref", rid)
-    elif not r["locked"] and (r["prompt"] != prompt or _ref_ids(r) != ref_ids) and r["status"] != "generating":
-        # Mô tả nhân vật/bối cảnh hoặc ảnh mặt đã đổi: tạo lại ảnh tham chiếu.
+    elif not r["locked"] and (r["prompt"] != prompt or [a for a, _ in _ref_pairs(r)] != ref_ids) \
+            and r["status"] != "generating":
         db.update("ref", r["id"], prompt=prompt, label=label, refs_json=refs_store, status="missing")
         r = db.get("ref", r["id"])
     if chapter_idx < r["first_chapter"]:
@@ -557,8 +625,7 @@ def ensure_ref(p: dict, owner_type: str, owner_id: int, key: str, label: str, pr
     if r["status"] != "missing":
         return r
     stored = _ref_pairs(r)
-    ref_ids = [a for a, _ in stored]
-    shas = [assets.sha_of(a) for a in ref_ids]
+    shas = [assets.sha_of(a) for a, _ in stored]
     h = prompts.input_hash(r["prompt"], shas, r["seed"], s["image_model"], r["width"], r["height"], "ref")
     reuse = assets.find_by_input_hash(h, "ref")
     if reuse:
@@ -575,23 +642,10 @@ def ensure_ref(p: dict, owner_type: str, owner_id: int, key: str, label: str, pr
     return db.get("ref", r["id"])
 
 
-def _ref_pairs(r: dict) -> list[tuple[int, str]]:
-    out = []
-    for x in jl(r["refs_json"], []):
-        out.append((int(x[0]), str(x[1])) if isinstance(x, list) else (int(x), "reference"))
-    return out
-
-
-def _ref_ids(r: dict) -> list[int]:
-    return [a for a, _ in _ref_pairs(r)]
-
-
 def enqueue_ref(rid: int) -> None:
-    """Tạo (lại) ảnh tham chiếu theo đúng prompt và tham chiếu đang lưu."""
     r = db.get("ref", rid)
-    p = project(r["project_id"])
-    ensure_ref(p, r["owner_type"], r["owner_id"], r["state_key"], r["label"], r["prompt"], _ref_pairs(r),
-               r["width"], r["height"], r["first_chapter"])
+    ensure_ref(project(r["project_id"]), r["owner_type"], r["owner_id"], r["state_key"], r["label"], r["prompt"],
+               _ref_pairs(r), r["width"], r["height"], r["first_chapter"])
 
 
 def _set_ref_result(p: dict, r: dict, asset_id: int, h: str) -> None:
@@ -660,7 +714,6 @@ def scene_spec(p: dict, ch: dict, beat: dict, ensure: bool = True) -> dict | Non
         char = db.get("character", c["character_id"])
         if char and char["status"] == "approved":
             cast.append({**c, "char": char})
-    max_cast = int(s["max_cast_refs"])
     refs: list[tuple[int, str]] = []
     cast_desc = []
     ready = True
@@ -669,7 +722,7 @@ def scene_spec(p: dict, ch: dict, beat: dict, ensure: bool = True) -> dict | Non
         state = st.state_at(char["id"], ch["idx"])
         cast_desc.append({"name": char["name"], "appearance": char["appearance"], "pose": c.get("pose", ""),
                           "expression": c.get("expression", ""), "state_text": st.describe(state)})
-        if i >= max_cast:
+        if i >= int(s["max_cast_refs"]):
             continue
         f = face_ref(p, char, state, ch["idx"], ensure)
         o = outfit_ref(p, char, state, f, ch["idx"], ensure)
@@ -715,8 +768,8 @@ def _enqueue_beat_image(p: dict, ch: dict, beat: dict) -> None:
         prompt=spec["prompt"], negative_prompt=s["negative_prompt"],
         refs=[RefImage(asset_id=a, role=r, sha256=assets.sha_of(a)) for a, r in spec["refs"]],
         width=beat["img_width"], height=beat["img_height"], seed=beat["seed"], steps=s.get("image_steps"),
-        meta={"purpose": "scene", "chapter": ch["idx"], "beat": beat["idx"], "spec": {
-            "prompt": spec["prompt"], "refs": [a for a, _ in spec["refs"]]}})
+        meta={"purpose": "scene", "chapter": ch["idx"], "beat": beat["idx"],
+              "spec": {"prompt": spec["prompt"], "refs": [a for a, _ in spec["refs"]]}})
     jobs.enqueue(p["id"], "image.generate", payload.model_dump(), "beat_image", beat["id"],
                  input_hash=spec["hash"], model_hint=s["image_model"], priority=1)
     db.update("beat", beat["id"], image_status="generating")
@@ -772,10 +825,10 @@ def produce(p: dict, ch: dict) -> None:
 
 
 def chapter_progress(p: dict, ch: dict) -> dict:
-    r = db.one("SELECT COUNT(*) n, SUM(image_status='approved') ok, SUM(image_status='pending') pend, "
-               "SUM(image_status IN ('failed','rejected')) bad FROM beat WHERE chapter_id=? AND status='approved'", ch["id"])
+    r = db.one("SELECT COUNT(*) n, SUM(image_status='approved') ok, SUM(image_status='pending') pend "
+               "FROM beat WHERE chapter_id=? AND status='approved'", ch["id"])
     out = {"images": r["n"] or 0, "images_ok": r["ok"] or 0, "images_pending": r["pend"] or 0,
-           "images_bad": r["bad"] or 0, "audio": 0, "audio_ok": 0, "panels": 0, "overflow": 0}
+           "audio": 0, "audio_ok": 0, "panels": 0, "overflow": 0}
     if wants_video(p):
         a = db.one("SELECT COUNT(*) n, SUM(audio_status='approved') ok FROM segment WHERE chapter_id=?", ch["id"])
         out.update(audio=a["n"] or 0, audio_ok=a["ok"] or 0)
@@ -804,9 +857,9 @@ def check_done(p: dict, ch: dict) -> None:
 
 def publish(p: dict, ch: dict) -> None:
     if wants_video(p):
-        jobs.enqueue(p["id"], "local.render_video", {"chapter_id": ch["id"]}, "render_video", ch["id"])
+        jobs.enqueue(p["id"], "local.render_video", {"chapter_id": ch["id"]}, "render_video", ch["id"], max_attempts=1)
     if wants_comic(p):
-        jobs.enqueue(p["id"], "local.compose_comic", {"chapter_id": ch["id"]}, "compose_comic", ch["id"])
+        jobs.enqueue(p["id"], "local.compose_comic", {"chapter_id": ch["id"]}, "compose_comic", ch["id"], max_attempts=1)
 
 
 # ================================================================ điều phối
@@ -831,8 +884,7 @@ def advance_chapter(cid: int) -> None:
     if s == "new":
         if not (p["autorun"] or ch["run_requested"]):
             return
-        prev = db.one("SELECT status FROM chapter WHERE project_id=? AND idx<? ORDER BY idx DESC LIMIT 1",
-                      p["id"], ch["idx"])
+        prev = db.one("SELECT status FROM chapter WHERE project_id=? AND idx<? ORDER BY idx DESC LIMIT 1", p["id"], ch["idx"])
         if prev and rank(prev["status"]) < rank("state_ready"):
             return
         enqueue_extract(p, ch)
@@ -880,6 +932,26 @@ def advance_producing(pid: int) -> None:
         advance_chapter(ch["id"])
 
 
+def add_manual_event(ch: dict, subject_type: str, subject_id: int, field: str, value: str, permanent: bool = False,
+                     until_chapter: int | None = None, evidence: str = "", note: str = "create") -> int:
+    eid = db.insert("state_event", project_id=ch["project_id"], subject_type=subject_type, subject_id=subject_id,
+                    chapter_id=ch["id"], chapter_idx=ch["idx"],
+                    field=st.normalize_field(field, permanent, subject_type), value=value.strip(),
+                    permanent=int(permanent or field == "mark"), until_chapter=until_chapter, evidence=evidence,
+                    status="approved", reviewer="user", flags_json="[]", created_at=now())
+    audit(ch["project_id"], "event", eid, note, "user")
+    mark_recheck_after(ch["project_id"], ch["idx"])
+    refresh_refs(ch["project_id"], ch["idx"])
+    return eid
+
+
+def remove_mark(character_id: int, mark: str, chapter_id: int) -> int:
+    """Xóa đúng một dấu vết từ chương chỉ định, giữ các dấu vết khác."""
+    ch = db.get("chapter", chapter_id)
+    return add_manual_event(ch, "character", character_id, "mark", "-" + mark.strip(), True,
+                            evidence="(xóa thủ công)", note="remove_mark")
+
+
 # ================================================================ kết quả job
 def _artifact(job: dict, name: str) -> Path:
     path = jobs.artifact_dir(job["id"]) / Path(name).name
@@ -908,8 +980,7 @@ def handle_beat_image(job: dict, output: dict) -> None:
     spec = jl(job["payload_json"], {}).get("meta", {}).get("spec", {})
     aid = assets.save_file(_artifact(job, output["files"][0]), "scene", p["id"], input_hash=job["input_hash"],
                            model_id=job["model_id"], meta={"beat": b["id"]})
-    _set_beat_image(p, ch, b, aid, {"hash": job["input_hash"], "prompt": spec.get("prompt", ""),
-                                    "refs": spec.get("refs", [])})
+    _set_beat_image(p, ch, b, aid, {"hash": job["input_hash"], "prompt": spec.get("prompt", ""), "refs": spec.get("refs", [])})
     advance_chapter(ch["id"])
 
 
@@ -929,7 +1000,7 @@ def handle_tts(job: dict, output: dict) -> None:
 
 def handle_render_video(job: dict, output: dict) -> None:
     db.update("chapter", job["owner_id"], video_asset_id=output.get("video_asset_id"),
-              srt_asset_id=output.get("srt_asset_id"))
+              srt_asset_id=output.get("srt_asset_id"), error="")
 
 
 def handle_compose_comic(job: dict, output: dict) -> None:
@@ -940,25 +1011,19 @@ def handle_compose_comic(job: dict, output: dict) -> None:
 def handle_dedupe(job: dict, output: dict) -> None:
     from . import dedupe
 
-    pid = job["owner_id"]
     text = output.get("text", "")
     try:
         data = llm.DedupeOut.model_validate(llm.extract_json(text))
     except (ValueError, ValidationError) as e:
         jobs.retry_with_feedback(job, text, str(e))
         return
-    dedupe.apply_llm(pid, data)
+    dedupe.apply_llm(job["owner_id"], data)
 
 
 HANDLERS = {
-    "chapter_extract": handle_extract,
-    "chapter_beats": handle_beats,
-    "ref_image": handle_ref_image,
-    "beat_image": handle_beat_image,
-    "segment_audio": handle_tts,
-    "render_video": handle_render_video,
-    "compose_comic": handle_compose_comic,
-    "project_dedupe": handle_dedupe,
+    "chapter_extract": handle_extract, "chapter_beats": handle_beats, "ref_image": handle_ref_image,
+    "beat_image": handle_beat_image, "segment_audio": handle_tts, "render_video": handle_render_video,
+    "compose_comic": handle_compose_comic, "project_dedupe": handle_dedupe,
 }
 
 
@@ -1019,8 +1084,8 @@ def regen_audio(seg_id: int) -> None:
 
 
 def refresh_refs(pid: int, from_chapter_idx: int = 0) -> None:
-    """Sau khi trạng thái / mô tả thay đổi: tạo trước các ảnh tham chiếu mới cho những chương đã có ảnh cảnh,
-    để giao diện đánh dấu đúng "ảnh cũ". Không tự tạo lại ảnh cảnh (người dùng quyết định)."""
+    """Sau khi trạng thái / mô tả đổi: tạo trước ảnh tham chiếu mới cho các chương đã sản xuất để đánh dấu đúng
+    "ảnh cũ". Không tự tạo lại ảnh cảnh (người dùng quyết định)."""
     p = project(pid)
     for ch in db.q("SELECT * FROM chapter WHERE project_id=? AND idx>=? AND status IN ('producing','done') ORDER BY idx",
                    pid, from_chapter_idx):
@@ -1030,7 +1095,6 @@ def refresh_refs(pid: int, from_chapter_idx: int = 0) -> None:
 
 
 def stale_info(p: dict, ch: dict, beat: dict) -> dict:
-    """Ảnh gốc đã cũ chưa (đầu vào đổi) và đổi những gì."""
     if not beat["image_asset_id"] or beat["image_locked"]:
         return {"stale": False}
     spec = scene_spec(p, ch, beat, ensure=False)
@@ -1039,10 +1103,9 @@ def stale_info(p: dict, ch: dict, beat: dict) -> dict:
     if spec["hash"] == beat["image_hash"]:
         return {"stale": False}
     old_refs = set(jl(beat["image_refs_json"], []))
-    new_refs = {a for a, _ in spec["refs"]}
     return {"stale": True, "diff": prompts.word_diff(beat["image_prompt"], spec["prompt"]),
             "prompt_changed": beat["image_prompt"] != spec["prompt"],
-            "refs_changed": old_refs != new_refs, "new_prompt": spec["prompt"]}
+            "refs_changed": old_refs != {a for a, _ in spec["refs"]}, "new_prompt": spec["prompt"]}
 
 
 def regen_stale(chapter_id: int) -> int:
@@ -1060,7 +1123,6 @@ def regen_stale(chapter_id: int) -> int:
 
 
 def reset_chapter(chapter_id: int, to: str) -> None:
-    """Chạy lại từ một bước: 'extract' hoặc 'beats'."""
     ch = db.get("chapter", chapter_id)
     for j in db.q("SELECT id FROM job WHERE owner_type IN ('chapter_extract','chapter_beats') AND owner_id=? "
                   "AND status='queued'", ch["id"]):
@@ -1078,8 +1140,12 @@ def reset_chapter(chapter_id: int, to: str) -> None:
 # ================================================================ việc cục bộ
 def _local_progress(job_id: int):
     def report(frac: float, msg: str = "") -> None:
-        db.update("job", job_id, progress=max(0.0, min(1.0, frac)), progress_msg=msg[:200])
+        jobs.record_progress(job_id, frac, msg)
     return report
+
+
+def settings_warnings(p: dict) -> list[dict]:
+    return validate.warnings(p, p["settings"])
 
 
 def run_local_job(job: dict) -> dict:
@@ -1091,6 +1157,7 @@ def run_local_job(job: dict) -> dict:
     work = jobs.artifact_dir(job["id"])
     report = _local_progress(job["id"])
     if job["kind"] == "local.render_video":
+        system.require_ffmpeg()
         segs = db.q("""SELECT s.*, b.image_asset_id, b.shot FROM segment s JOIN beat b ON b.id=s.beat_id
                        WHERE s.chapter_id=? ORDER BY s.idx""", ch["id"])
         items = [{"image": assets.path_of(sg["image_asset_id"]), "audio": assets.path_of(sg["audio_asset_id"]),
@@ -1107,8 +1174,7 @@ def run_local_job(job: dict) -> dict:
         vid = assets.save_file(out, "video", p["id"], meta={"chapter": ch["idx"]})
         srt_path = work / "chapter.srt"
         srt_path.write_text(video.build_srt(cues), encoding="utf-8")
-        sid = assets.save_file(srt_path, "subtitle", p["id"], meta={"chapter": ch["idx"]})
-        return {"video_asset_id": vid, "srt_asset_id": sid}
+        return {"video_asset_id": vid, "srt_asset_id": assets.save_file(srt_path, "subtitle", p["id"])}
     if job["kind"] == "local.compose_comic":
         font = comic.find_font(cfg.font_path)
         g = comic_geometry(p)
@@ -1146,8 +1212,11 @@ def local_tick(worker_id: str = "local-runner") -> bool:
         return False
     t0 = now()
     try:
-        out = run_local_job(job)
-        jobs.complete(job["id"], out, "local", now() - t0)
+        jobs.complete(job["id"], run_local_job(job), "local", now() - t0)
+    except system.ToolMissing as e:
+        jobs.fail(job["id"], str(e), retryable=False)
+    except FileNotFoundError as e:
+        jobs.fail(job["id"], f"Không tìm thấy chương trình hoặc tệp: {e}. {system.INSTALL_HINT}", retryable=False)
     except Exception as e:  # noqa: BLE001
         log.exception("Local job %s lỗi", job["id"])
         jobs.fail(job["id"], str(e), retryable=False)

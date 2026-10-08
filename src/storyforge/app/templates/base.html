@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{% block title %}{% if p is defined and p %}{{ p.name }} · {% endif %}StoryForge{% endblock %}</title>
+  <title>{% block title %}{% if p is defined and p and p.name %}{{ p.name }} · {% endif %}StoryForge{% endblock %}</title>
   <link rel="stylesheet" href="/static/app.css">
   {% if vendor('htmx.min.js') %}<script src="/static/vendor/htmx.min.js"></script>{% else %}<script src="https://unpkg.com/htmx.org@2.0.4"></script>{% endif %}
   {% if vendor('alpine.min.js') %}<script defer src="/static/vendor/alpine.min.js"></script>{% else %}<script defer src="https://unpkg.com/alpinejs@3.14.8/dist/cdn.min.js"></script>{% endif %}
@@ -24,11 +24,15 @@
     <a href="/p/{{ p.id }}/audit">Nhật ký</a>
   </nav>
   {% endif %}
-  <span class="right"><a href="/storage">Dung lượng</a> · <a href="/workers">Worker</a></span>
+  <span class="right"><a href="/storage">Hệ thống</a> · <a href="/workers">Worker</a></span>
 </header>
 {% if p is defined and p and p.paused %}
 <div class="banner warn">⏸ Dự án đang tạm dừng: {{ p.pause_reason }}
   <form method="post" action="/p/{{ p.id }}/resume" class="inline"><button>Tiếp tục</button></form></div>
+{% endif %}
+{% set miss = missing_tools() %}
+{% if miss and (p is not defined or not p or p.mode in ('video','both')) %}
+<div class="banner bad">Thiếu <b>{{ miss|join(', ') }}</b>: không dựng được video. {{ INSTALL_HINT }} <a href="/storage#system">Kiểm tra</a></div>
 {% endif %}
 {% if missing_workers is defined and missing_workers %}
 <div class="banner bad">Có việc đang chờ nhưng không có worker nào online để nhận: <b>{{ missing_workers|join(', ') }}</b>. <a href="/workers">Xem cách chạy worker</a></div>

@@ -2,7 +2,7 @@
 
 - DB mới: tạo schema hiện tại.
 - DB cũ: sao lưu vào data/backups/ rồi chạy lần lượt các bước nâng cấp.
-Thêm bước mới: viết hàm _vN_to_vN1 và đăng ký vào STEPS, tăng db.SCHEMA_VERSION.
+Thêm bước mới: viết hàm _vN_to_vN1, đăng ký vào STEPS, tăng db.SCHEMA_VERSION.
 """
 from __future__ import annotations
 
@@ -23,14 +23,12 @@ def backup(db_path: str | Path, backup_dir: Path, label: str = "manual") -> Path
     backup_dir.mkdir(parents=True, exist_ok=True)
     stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
     out = backup_dir / f"storyforge-{stamp}-{label}.db"
-    src = sqlite3.connect(str(db_path))
-    dst = sqlite3.connect(str(out))
+    src, dst = sqlite3.connect(str(db_path)), sqlite3.connect(str(out))
     with dst:
         src.backup(dst)
     src.close()
     dst.close()
-    olds = sorted(backup_dir.glob("storyforge-*.db"))
-    for f in olds[:-KEEP_BACKUPS]:
+    for f in sorted(backup_dir.glob("storyforge-*.db"))[:-KEEP_BACKUPS]:
         f.unlink(missing_ok=True)
     log.info("Đã sao lưu DB vào %s", out)
     return out
@@ -42,9 +40,7 @@ def current_version(c: sqlite3.Connection) -> int:
         r = c.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
         if r:
             return int(r[0])
-    if "project" in tables:
-        return 1
-    return 0
+    return 1 if "project" in tables else 0
 
 
 def ensure(db, backup_dir: Path) -> None:
@@ -78,12 +74,8 @@ def _cols(c: sqlite3.Connection, table: str) -> list[str]:
 
 
 def _v1_to_v2(c: sqlite3.Connection) -> None:
-    """v1 -> v2.
-
-    Giữ: dự án, chương, nhân vật, sự kiện trạng thái, ảnh tham chiếu nhân vật, tài nguyên, nhật ký.
-    Gộp bối cảnh theo tên (v1 tách biến thể thành bối cảnh riêng).
-    Bỏ: nhịp, cảnh, trang, khung, job (dữ liệu dẫn xuất, sẽ tạo lại; ảnh cũ vẫn được dùng lại qua hash).
-    """
+    """v1 -> v2: giữ dự án, chương, nhân vật, sự kiện, ảnh tham chiếu nhân vật, tài nguyên, nhật ký.
+    Gộp bối cảnh theo tên; bỏ dữ liệu dẫn xuất (nhịp, cảnh, trang, khung, job) để tạo lại."""
     from .db import SCHEMA
 
     c.execute("PRAGMA foreign_keys=OFF")
@@ -103,28 +95,25 @@ def _v1_to_v2(c: sqlite3.Connection) -> None:
         c.execute("COMMIT")
         c.executescript(SCHEMA)
         c.execute("BEGIN")
-        seen: dict[tuple, int] = {}
+        seen: set[tuple] = set()
         for l in old_locs:
             key = (l["project_id"], l["name"].strip().lower())
             if key in seen:
                 continue
-            seen[key] = l["id"]
+            seen.add(key)
             c.execute("INSERT INTO location(id,project_id,name,description,first_chapter,status,flags_json,reviewer,created_at)"
                       " VALUES(?,?,?,?,?,?,?,?,?)",
                       (l["id"], l["project_id"], l["name"], l.get("description", ""), l.get("first_chapter", 1),
                        l.get("status", "pending"), l.get("flags_json", "[]"), l.get("reviewer", ""), l.get("created_at")))
         for e in old_events:
-            field = e["field"]
-            if field == "injury" and e.get("permanent"):
-                field = "mark"
+            field = "mark" if e["field"] == "injury" and e.get("permanent") else e["field"]
             c.execute("INSERT INTO state_event(id,project_id,subject_type,subject_id,chapter_id,chapter_idx,field,value,"
                       "permanent,until_chapter,evidence,status,flags_json,reviewer,created_at)"
                       " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                       (e["id"], e["project_id"], "character", e["character_id"], e["chapter_id"], e["chapter_idx"], field,
                        e["value"], e["permanent"], e["until_chapter"], e["evidence"], e["status"], e["flags_json"],
                        e["reviewer"], e["created_at"]))
-        c.execute("UPDATE chapter SET status='state_ready' WHERE status IN "
-                  "('beating','review_beats','producing','done')")
+        c.execute("UPDATE chapter SET status='state_ready' WHERE status IN ('beating','review_beats','producing','done')")
         c.execute("UPDATE chapter SET status='new' WHERE status='extracting'")
         c.execute("COMMIT")
     except Exception:
@@ -134,4 +123,12 @@ def _v1_to_v2(c: sqlite3.Connection) -> None:
         c.execute("PRAGMA foreign_keys=ON")
 
 
-STEPS: dict[int, Callable[[sqlite3.Connection], None]] = {1: _v1_to_v2}
+def _v2_to_v3(c: sqlite3.Connection) -> None:
+    """v2 -> v3: theo dõi heartbeat và tiến độ của job để phát hiện job đứng yên."""
+    cols = _cols(c, "job")
+    for name, ddl in (("heartbeat_at", "REAL"), ("last_progress_at", "REAL"), ("stalls", "INTEGER NOT NULL DEFAULT 0")):
+        if name not in cols:
+            c.execute(f"ALTER TABLE job ADD COLUMN {name} {ddl}")
+
+
+STEPS: dict[int, Callable[[sqlite3.Connection], None]] = {1: _v1_to_v2, 2: _v2_to_v3}

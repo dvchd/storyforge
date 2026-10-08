@@ -35,11 +35,10 @@ DEFAULT_LEASE = {
 }
 
 
-# ---------------------------------------------------------------- payloads
 class RefImage(BaseModel):
     asset_id: int
-    role: str = ""          # vai trò, ví dụ "the face of Lam An"
-    sha256: str = ""        # worker dùng để cache và kiểm tra toàn vẹn file
+    role: str = ""
+    sha256: str = ""
 
 
 class LlmChatPayload(BaseModel):
@@ -49,7 +48,6 @@ class LlmChatPayload(BaseModel):
     schema_name: str | None = None
     temperature: float = 0.2
     max_tokens: int | None = None
-    # Thông tin phụ: adapter thật bỏ qua, adapter giả lập dùng để mô phỏng.
     meta: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -87,10 +85,9 @@ PAYLOAD_MODELS: dict[str, type[BaseModel]] = {
 }
 
 
-# ----------------------------------------------------------------- outputs
 class LlmChatOutput(BaseModel):
     text: str
-    usage: dict[str, Any] = Field(default_factory=dict)   # prompt_tokens, completion_tokens
+    usage: dict[str, Any] = Field(default_factory=dict)
 
 
 class ImageOutput(BaseModel):
@@ -108,10 +105,9 @@ class TtsOutput(BaseModel):
     file: str
     duration: float
     sentences: list[Timing] = Field(default_factory=list)
-    words: list[Timing] = Field(default_factory=list)      # nếu engine TTS trả mốc từng từ
+    words: list[Timing] = Field(default_factory=list)
 
 
-# ------------------------------------------------------------- worker API
 class ClaimRequest(BaseModel):
     schema_version: int = SCHEMA_VERSION
     worker_id: str
@@ -132,7 +128,7 @@ class ClaimedJob(BaseModel):
 
 
 class HeartbeatRequest(BaseModel):
-    progress: float | None = None        # 0..1
+    progress: float | None = None        # 0..1, app chỉ ghi nhận khi tăng
     message: str = ""
 
 

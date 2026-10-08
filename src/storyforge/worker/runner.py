@@ -54,7 +54,7 @@ def _sniff_ext(path: Path) -> str:
 class AssetCache:
     """Cache ảnh tham chiếu theo sha256, kiểm tra toàn vẹn, giới hạn dung lượng (xóa file ít dùng nhất)."""
 
-    def __init__(self, client: WorkerClient, root: Path, max_mb: float = 2048) -> None:
+    def __init__(self, client, root: Path, max_mb: float = 2048) -> None:
         self.client, self.root, self.max_bytes = client, root, int(max_mb * 1024 * 1024)
         root.mkdir(parents=True, exist_ok=True)
 
@@ -95,7 +95,7 @@ class Worker:
         self.client = client
         self.adapters = adapters
         self.name = name or platform.node()
-        self.memory_mode = memory_mode       # sequential: chỉ giữ một model nặng trong RAM
+        self.memory_mode = memory_mode
         self.cache = AssetCache(client, cache_dir or Path(tempfile.gettempdir()) / "storyforge-worker-cache", cache_mb)
         self.heartbeat_every = heartbeat_every
         self._stop = threading.Event()
@@ -141,7 +141,7 @@ class Worker:
 
         def hb() -> None:
             last = time.time()
-            while not stop_hb.wait(1.0):
+            while not stop_hb.wait(0.5):
                 due = time.time() - last >= interval
                 if not due and not (prog["dirty"] and time.time() - last >= 1.5):
                     continue
@@ -184,7 +184,7 @@ class Worker:
         try:
             self.client.fail(job_id, FailRequest(error=err, retryable=retryable, cancelled=cancelled))
         except Exception:  # noqa: BLE001
-            log.exception("Không gửi được lỗi job %s", job_id)
+            log.warning("Không gửi được lỗi job %s (có thể job đã bị thu hồi)", job_id)
 
     def run_forever(self, poll: float = 2.0) -> None:
         log.info("Worker %s sẵn sàng: %s", self.client.worker_id, ", ".join(self.capabilities()))
@@ -233,9 +233,9 @@ def main(argv: list[str] | None = None) -> None:
     adapters_cfg = MOCK_ADAPTERS if args.mock else cfg.get("adapters", [])
     if not adapters_cfg:
         ap.error("Không có adapter nào. Dùng --mock hoặc khai báo [[adapters]] trong worker.toml")
-    adapters = [build(a) for a in adapters_cfg]
     client = WorkerClient(url, token, wid, timeout=float(srv.get("timeout", 120)))
-    w = Worker(client, adapters, name=wk.get("name", ""), memory_mode=wk.get("memory_mode", "sequential"),
+    w = Worker(client, [build(a) for a in adapters_cfg], name=wk.get("name", ""),
+               memory_mode=wk.get("memory_mode", "sequential"),
                cache_dir=Path(wk["cache_dir"]).expanduser() if wk.get("cache_dir") else None,
                heartbeat_every=float(wk.get("heartbeat_every", 20)), cache_mb=float(wk.get("cache_mb", 2048)))
     try:

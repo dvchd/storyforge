@@ -2,6 +2,13 @@
 {% block content %}
 <h1>Cài đặt dự án</h1>
 {% if request.query_params.get('saved') %}<div class="banner ok">Đã lưu. Thay đổi kích thước hoặc phong cách sẽ làm ảnh hiện có thành "ảnh cũ"; dùng nút "Tạo lại ảnh cũ" ở từng chương.</div>{% endif %}
+{% if warns %}
+<section class="card warnbox">
+  <h3>Kiểm tra cài đặt</h3>
+  {% for w in warns %}<div class="act act-{{ 'bad' if w.level == 'error' else ('warn' if w.level == 'warn' else 'info') }}">{{ w.text }}</div>{% endfor %}
+  {% if 'image_area' in warn_keys %}<form method="post" action="/p/{{ p.id }}/settings/recommended" class="inline"><button>Dùng diện tích ảnh gốc gợi ý ({{ '{:,}'.format(need.recommended) }} px)</button></form>{% endif %}
+</section>
+{% endif %}
 <div class="cols">
 <section class="card">
   <form method="post" action="/p/{{ p.id }}/settings" class="stack">
@@ -10,14 +17,22 @@
     <label>Loại <select name="mode">{% for k, v in MODE_NAMES.items() %}<option value="{{ k }}" {% if p.mode==k %}selected{% endif %}>{{ v }}</option>{% endfor %}</select></label>
     <label>Phong cách ảnh (tiếng Anh) <textarea name="style_prompt" rows="3">{{ p.style_prompt }}</textarea></label>
     {% for title, fields in groups %}
-    <details {% if loop.first %}open{% endif %}><summary><b>{{ title }}</b></summary><div class="stack">
-    {% for key, label, typ in fields %}
-      {% set v = p.settings.get(key) %}
-      {% if typ == 'bool' %}<label><input type="checkbox" name="{{ key }}" {% if v %}checked{% endif %}> {{ label }}</label>
-      {% elif typ == 'area' %}<label>{{ label }} <textarea name="{{ key }}" rows="3">{{ v or '' }}</textarea></label>
-      {% elif typ.startswith('select:') %}<label>{{ label }} <select name="{{ key }}">{% for opt in typ[7:].split(',') %}{% set k, lb = opt.split('=') %}<option value="{{ k }}" {% if v==k %}selected{% endif %}>{{ lb }}</option>{% endfor %}</select></label>
-      {% else %}<label>{{ label }} <input name="{{ key }}" value="{{ '' if v is none else v }}"></label>{% endif %}
-    {% endfor %}</div></details>
+    <details id="g-{{ title }}" {% if loop.first or (fields|map(attribute=0)|select('in', warn_keys)|list) %}open{% endif %}>
+      <summary><b>{{ title }}</b>
+        {% set n_over = fields|map(attribute=0)|select('in', overridden)|list|length %}{% if n_over %}<span class="muted small">· {{ n_over }} giá trị đã đổi</span>{% endif %}
+        <button class="ghost small" formaction="/p/{{ p.id }}/settings/reset?group={{ title }}" formmethod="post"
+                onclick="return confirm('Đặt lại nhóm {{ title }} về mặc định?')">Đặt lại mặc định</button></summary>
+      <div class="stack">
+      {% for key, label, typ in fields %}
+        {% set v = p.settings.get(key) %}
+        {% set cls = 'warnfield' if key in warn_keys else '' %}
+        {% if typ == 'bool' %}<label class="{{ cls }}"><input type="checkbox" name="{{ key }}" {% if v %}checked{% endif %}> {{ label }}</label>
+        {% elif typ == 'area' %}<label class="{{ cls }}">{{ label }} <textarea name="{{ key }}" rows="3">{{ v or '' }}</textarea></label>
+        {% elif typ.startswith('select:') %}<label class="{{ cls }}">{{ label }} <select name="{{ key }}">{% for opt in typ[7:].split(',') %}{% set k, lb = opt.split('=') %}<option value="{{ k }}" {% if v==k %}selected{% endif %}>{{ lb }}</option>{% endfor %}</select></label>
+        {% else %}<label class="{{ cls }}">{{ label }} <input name="{{ key }}" value="{{ '' if v is none else v }}">
+          {% if key in overridden and defaults[key] != v %}<small class="muted">mặc định: {{ defaults[key] if defaults[key] is not none else '(trống)' }}</small>{% endif %}
+          {% if key == 'image_area' %}<small class="muted">Tối thiểu cho khung lớn nhất: {{ '{:,}'.format(need.required|int) }} px · gợi ý {{ '{:,}'.format(need.recommended) }} px</small>{% endif %}</label>{% endif %}
+      {% endfor %}</div></details>
     {% endfor %}
     <button>Lưu</button>
   </form>

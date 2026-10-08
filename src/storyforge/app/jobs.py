@@ -1,9 +1,10 @@
 """Hàng đợi job trên SQLite.
 
 - Nhận job bằng một câu UPDATE ... RETURNING: an toàn khi nhiều worker.
-- Ưu tiên hiệu lực = priority + điểm chờ (job chờ lâu được cộng dần, chống bị bỏ đói),
-  sau đó ưu tiên job dùng model worker đang tải sẵn để tránh đổi model liên tục.
-- Mỗi loại job có thời gian thuê riêng; hết hạn mà không có heartbeat thì job tự quay lại hàng đợi.
+- Ưu tiên hiệu lực = priority + điểm chờ (chống bỏ đói), sau đó ưu tiên job dùng model worker đang tải.
+- Thời gian thuê theo loại job; hết hạn mà không có heartbeat thì job tự quay lại hàng đợi.
+- Không tin tuyệt đối vào worker: tiến độ chỉ được ghi nhận khi TĂNG; job không tiến triển quá
+  ngưỡng "đứng yên" của loại job thì bị thu hồi (watchdog), kể cả khi worker vẫn gửi heartbeat.
 """
 from __future__ import annotations
 
@@ -18,9 +19,18 @@ from .db import db, jd, jl, now
 
 log = logging.getLogger("storyforge.jobs")
 
+# Ngưỡng đứng yên (giây). LLM qua API thường không báo tiến độ trong lúc sinh chữ: tắt (0), dựa vào lease.
+DEFAULT_STALL = {"image.generate": 600, "tts.synthesize": 600, "image.remove_bg": 600, "llm.chat": 0}
+STALL_WARN = 120     # giao diện đánh dấu "đứng yên" sau chừng này giây
+
 
 def lease_for(kind: str) -> int:
     return int((get_settings().lease or {}).get(kind) or DEFAULT_LEASE.get(kind, 600))
+
+
+def stall_for(kind: str) -> int:
+    o = get_settings().stall or {}
+    return int(o[kind]) if kind in o else int(DEFAULT_STALL.get(kind, 0))
 
 
 def enqueue(project_id: int | None, kind: str, payload: dict, owner_type: str, owner_id: int,
@@ -44,8 +54,7 @@ def _eff_priority_sql() -> str:
 def claim(worker_id: str, caps: list[str], loaded: list[str]) -> dict | None:
     if not caps:
         return None
-    t = now()
-    params: dict[str, Any] = {"w": worker_id, "now": t}
+    params: dict[str, Any] = {"w": worker_id, "now": now()}
     cq = ",".join(f":c{i}" for i in range(len(caps)))
     params.update({f"c{i}": c for i, c in enumerate(caps)})
     if loaded:
@@ -55,7 +64,7 @@ def claim(worker_id: str, caps: list[str], loaded: list[str]) -> dict | None:
         lq = "''"
     sql = f"""
     UPDATE job SET status='running', worker_id=:w, attempts=attempts+1, lease_until=:now + lease_seconds,
-                   started_at=:now, progress=NULL, progress_msg=''
+                   started_at=:now, heartbeat_at=:now, last_progress_at=:now, progress=NULL, progress_msg=''
     WHERE id = (
       SELECT id FROM job
       WHERE kind IN ({cq})
@@ -69,17 +78,49 @@ def claim(worker_id: str, caps: list[str], loaded: list[str]) -> dict | None:
     return dict(row) if row else None
 
 
+def record_progress(job_id: int, progress: float | None, message: str = "") -> None:
+    """Ghi tiến độ, chỉ khi tăng (đơn điệu). Thông điệp mới không được tính là tiến triển."""
+    j = db.get("job", job_id)
+    if not j:
+        return
+    t = now()
+    cols: dict[str, Any] = {"heartbeat_at": t}
+    if progress is not None:
+        p = max(0.0, min(1.0, float(progress)))
+        if p > (j["progress"] or 0.0) + 1e-6:
+            cols.update(progress=p, last_progress_at=t)
+    if message:
+        cols["progress_msg"] = message[:200]
+    db.update("job", job_id, **cols)
+
+
 def heartbeat(job_id: int, worker_id: str, progress: float | None = None, message: str = "") -> dict:
     j = db.get("job", job_id)
     if not j or j["worker_id"] != worker_id or j["status"] != "running":
         return {"ok": False, "cancel": True}
-    cols: dict[str, Any] = {"lease_until": now() + j["lease_seconds"]}
-    if progress is not None:
-        cols["progress"] = max(0.0, min(1.0, float(progress)))
-    if message:
-        cols["progress_msg"] = message[:200]
-    db.update("job", job_id, **cols)
+    db.update("job", job_id, lease_until=now() + j["lease_seconds"])
+    record_progress(job_id, progress, message)
     return {"ok": True, "cancel": bool(j["cancel_requested"])}
+
+
+def watchdog() -> int:
+    """Thu hồi job AI đang chạy mà không tiến triển quá ngưỡng. Trả số job đã xử lý."""
+    t, n = now(), 0
+    for j in db.q("SELECT * FROM job WHERE status='running' AND kind NOT LIKE 'local.%'"):
+        limit = stall_for(j["kind"])
+        if not limit:
+            continue
+        last = j["last_progress_at"] or j["started_at"] or t
+        if t - last <= limit:
+            continue
+        pct = int((j["progress"] or 0) * 100)
+        msg = (f"Đứng yên quá {limit // 60} phút ở {pct}% (worker {j['worker_id'] or '?'}): đã thu hồi. "
+               "Worker có thể bị treo hoặc báo tiến độ sai.")
+        log.warning("Job %s: %s", j["id"], msg)
+        db.update("job", j["id"], stalls=j["stalls"] + 1)
+        fail(j["id"], msg, retryable=True)
+        n += 1
+    return n
 
 
 def artifact_dir(job_id: int):
@@ -101,7 +142,7 @@ def complete(job_id: int, output: dict, model_id: str = "", elapsed: float = 0.0
     j = db.get("job", job_id)
     try:
         engine.handle_job_done(j, output)
-    except Exception as e:  # lỗi xử lý kết quả không được làm treo hàng đợi
+    except Exception as e:
         log.exception("Xử lý kết quả job %s lỗi", job_id)
         db.update("job", job_id, status="failed", error=f"handler: {e}")
         engine.handle_job_failed(db.get("job", job_id))
@@ -126,16 +167,15 @@ def fail(job_id: int, error: str, retryable: bool = True, cancelled: bool = Fals
     engine.handle_job_failed(db.get("job", job_id))
 
 
-def retry_with_feedback(job: dict, bad_text: str, error: str, fallback_model: str = "") -> bool:
-    """LLM trả sai: dựng lại hội thoại = prompt gốc + câu trả lời sai GẦN NHẤT + lời nhắc sửa.
-
-    Không nối dồn qua các lần thử (tránh phình token), tăng nhẹ temperature,
-    lần thử cuối chuyển sang model dự phòng nếu có.
-    """
+def retry_with_feedback(job: dict, bad_text: str, error: str, fallback_model: str = "",
+                        meta_update: dict | None = None) -> bool:
+    """LLM trả sai: prompt gốc + câu trả lời sai GẦN NHẤT + lời nhắc sửa (không nối dồn), tăng temperature,
+    lần cuối chuyển model dự phòng."""
     if job["attempts"] >= job["max_attempts"]:
         return False
     payload = jl(job["payload_json"], {})
     meta = payload.setdefault("meta", {})
+    meta.update(meta_update or {})
     base_n = int(meta.get("base_messages", 2))
     base_t = float(meta.setdefault("base_temperature", payload.get("temperature", 0.2)))
     msgs = payload.get("messages", [])[:base_n]
@@ -195,22 +235,18 @@ def online_capabilities(window: float = 60.0) -> set[str]:
 
 
 def missing_workers(project_id: int | None = None) -> list[str]:
-    """Loại job AI đang chờ mà không có worker nào online nhận được."""
     sql = "SELECT DISTINCT kind FROM job WHERE status='queued' AND kind NOT LIKE 'local.%'"
     args: list[Any] = []
     if project_id is not None:
         sql += " AND project_id=?"
         args.append(project_id)
-    kinds = {r["kind"] for r in db.q(sql, *args)}
-    return sorted(kinds - online_capabilities())
+    return sorted({r["kind"] for r in db.q(sql, *args)} - online_capabilities())
 
 
 def stats(project_id: int | None = None) -> dict:
-    """Thời gian trung bình theo loại job (50 job gần nhất) và ước tính thời gian còn lại."""
     where, args = ("WHERE project_id=?", [project_id]) if project_id is not None else ("", [])
-    kinds = [r["kind"] for r in db.q(f"SELECT DISTINCT kind FROM job {where}", *args)]
     out = {}
-    for k in kinds:
+    for k in [r["kind"] for r in db.q(f"SELECT DISTINCT kind FROM job {where}", *args)]:
         a = [project_id, k] if project_id is not None else [k]
         w = "WHERE project_id=? AND kind=?" if project_id is not None else "WHERE kind=?"
         done = db.q(f"SELECT elapsed FROM job {w} AND status='done' ORDER BY id DESC LIMIT 50", *a)
@@ -223,18 +259,16 @@ def stats(project_id: int | None = None) -> dict:
 
 
 def queue_positions(rows: list[dict]) -> dict[int, int]:
-    """Vị trí ước tính trong hàng đợi (theo cùng thứ tự claim, trong từng loại job)."""
     s = get_settings()
     t = now()
-    queued = db.q("SELECT id, kind, priority, created_at FROM job WHERE status='queued'")
 
     def eff(j: dict) -> float:
         return j["priority"] + min(s.aging_cap, int((t - (j["created_at"] or t)) / max(1, s.aging_seconds)))
 
-    pos: dict[int, int] = {}
     by_kind: dict[str, list[dict]] = {}
-    for j in queued:
+    for j in db.q("SELECT id, kind, priority, created_at FROM job WHERE status='queued'"):
         by_kind.setdefault(j["kind"], []).append(j)
+    pos: dict[int, int] = {}
     for lst in by_kind.values():
         lst.sort(key=lambda j: (-eff(j), j["id"]))
         for i, j in enumerate(lst, 1):

@@ -1,12 +1,13 @@
-"""Dòng lệnh của app: serve | demo | token | backup | gc | vendor."""
+"""Dòng lệnh của app: serve | demo | token | backup | gc | vendor | doctor."""
 from __future__ import annotations
 
 import argparse
 import logging
+import sys
 import urllib.request
 from pathlib import Path
 
-from .config import load_settings
+from .config import load_settings, set_settings
 
 VENDOR = {
     "htmx.min.js": "https://unpkg.com/htmx.org@2.0.4/dist/htmx.min.js",
@@ -29,16 +30,29 @@ def main(argv: list[str] | None = None) -> None:
     sub.add_parser("token", help="In worker token")
     sub.add_parser("backup", help="Sao lưu cơ sở dữ liệu vào data/backups/")
     gc = sub.add_parser("gc", help="Dọn tài nguyên không còn dùng")
-    gc.add_argument("--hours", type=float, default=24.0, help="Chỉ xóa tài nguyên cũ hơn số giờ này")
+    gc.add_argument("--hours", type=float, default=24.0)
     gc.add_argument("--dry-run", action="store_true")
     sub.add_parser("vendor", help="Tải htmx và Alpine về static/vendor để dùng offline")
+    sub.add_parser("doctor", help="Kiểm tra môi trường (ffmpeg, font, thư mục dữ liệu)")
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     s = load_settings(args.data)
+    set_settings(s)
+    from . import system
 
     if args.cmd == "token":
         print(s.worker_token)
         return
+    if args.cmd == "doctor":
+        from . import comic
+
+        miss = system.missing_tools()
+        print(f"Thư mục dữ liệu: {s.data_dir}")
+        print(f"ffmpeg : {s.ffmpeg} {'✗ THIẾU' if 'ffmpeg' in miss else '✓'}")
+        print(f"ffprobe: {s.ffprobe} {'✗ THIẾU' if 'ffprobe' in miss else '✓'}")
+        print(f"Font   : {comic.find_font(s.font_path) or '✗ không thấy (dùng font mặc định, chữ có dấu có thể lỗi)'}")
+        print(system.startup_report() or "Môi trường đủ để dựng video.")
+        sys.exit(1 if miss else 0)
     if args.cmd == "vendor":
         out = Path(__file__).parent / "static" / "vendor"
         out.mkdir(parents=True, exist_ok=True)
@@ -64,6 +78,7 @@ def main(argv: list[str] | None = None) -> None:
         print(f"{'(thử) ' if r['dry_run'] else ''}Xóa {r['rows']} bản ghi, {r['files']} file, "
               f"giải phóng {r['bytes'] / 1e6:.1f} MB")
         return
+    report = system.startup_report()
     if args.cmd == "demo":
         from . import engine, migrations, policy
         from .db import db, jd, now
@@ -86,6 +101,8 @@ def main(argv: list[str] | None = None) -> None:
         add_chapters(pid, items)
         engine.advance_project(pid)
         print(f"Đã tạo dự án #{pid} với {len(items)} chương. Mở web UI và bấm 'Chạy tất cả chương'.")
+        if report and args.mode in ("video", "both"):
+            print(report)
         return
 
     import uvicorn
@@ -94,6 +111,8 @@ def main(argv: list[str] | None = None) -> None:
     port = getattr(args, "port", None) or s.port
     app = create_app(s)
     print(f"StoryForge: http://{host}:{port}  |  worker token: {s.worker_token}")
+    if report:
+        print(report)
     uvicorn.run(app, host=host, port=port, log_level="info")
 
 

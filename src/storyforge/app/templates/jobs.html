@@ -4,6 +4,7 @@
   {% for s, lb in [('', 'Tất cả'), ('queued','Chờ'), ('running','Đang chạy'), ('failed','Lỗi'), ('cancelled','Đã hủy'), ('done','Xong')] %}
   <a href="?status={{ s }}" class="{{ 'on' if status==s else '' }}">{{ lb }}</a>{% endfor %}
   {% if jobcounts.get('failed') %}<form method="post" action="/p/{{ p.id }}/jobs/retry-failed" class="inline"><button class="ghost">Chạy lại tất cả job lỗi</button></form>{% endif %}</div>
+<p class="muted small">Tiến độ chỉ được ghi nhận khi tăng. Job ảnh/giọng không tiến triển quá 10 phút bị thu hồi và giao lại (LLM không báo tiến độ nên chỉ dựa vào thời hạn thuê).</p>
 <div hx-get="/p/{{ p.id }}/jobs/table?status={{ status }}" hx-trigger="every 3s [document.visibilityState=='visible']" hx-swap="innerHTML">
   {% include "partials/jobs_table.html" %}
 </div>

@@ -1,10 +1,7 @@
-"""Giao diện chung cho mọi adapter.
+"""Giao diện chung cho mọi adapter: run(job, ctx) -> AdapterResult.
 
-Mỗi adapter chỉ cần một hàm run(job, ctx) -> AdapterResult. Thêm model mới là viết thêm
-một class; app và prompt không phải sửa.
-
-Trong run(): gọi ctx.report(0..1, "thông điệp") để báo tiến độ, kiểm tra ctx.check_cancel()
-ở các điểm an toàn để dừng khi người dùng bấm Hủy.
+Trong run(): gọi ctx.report(0..1, "thông điệp") để báo tiến độ (app chỉ ghi nhận khi tăng;
+job ảnh/giọng không tiến triển quá ngưỡng sẽ bị thu hồi), kiểm tra ctx.check_cancel() để dừng khi bị hủy.
 """
 from __future__ import annotations
 
@@ -35,7 +32,7 @@ class AdapterResult:
 @dataclass
 class JobContext:
     workdir: Path
-    fetch_asset: Callable[[int, str], Path]          # (asset_id, sha256) -> đường dẫn file đã tải
+    fetch_asset: Callable[[int, str], Path]
     is_cancelled: Callable[[], bool] = lambda: False
     report: Callable[[float, str], None] = lambda frac, msg="": None
 
@@ -47,7 +44,7 @@ class JobContext:
 class Adapter:
     kind: str = ""
     type_name: str = ""
-    heavy: bool = False        # True: giữ model trong RAM, cần giải phóng khi đổi sang model khác
+    heavy: bool = False
 
     def __init__(self, cfg: dict[str, Any]) -> None:
         self.cfg = cfg

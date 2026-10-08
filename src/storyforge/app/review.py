@@ -32,9 +32,8 @@ def set_status(entity: str, id_: int, status: str, reviewer: str, note: str = ""
     row = db.get(table, id_)
     if not row:
         return None
-    pid = row["project_id"]
     db.update(table, id_, **{col: status, rcol: reviewer})
-    engine.audit(pid, entity, id_, {"approved": "approve", "rejected": "reject", "pending": "reopen"}[status],
+    engine.audit(row["project_id"], entity, id_, {"approved": "approve", "rejected": "reject", "pending": "reopen"}[status],
                  reviewer, note)
     _after(entity, row, status)
     return db.get(table, id_)
@@ -45,15 +44,10 @@ def _after(entity: str, row: dict, status: str) -> None:
     s = engine.project(pid)["settings"]
     auto_regen = bool(s.get("auto_regen_on_reject")) and status == "rejected"
     max_regen = int(s.get("max_regen", 3))
-    if entity == "character":
+    if entity in ("character", "location"):
         if status == "rejected":
-            db.ex("UPDATE state_event SET status='rejected', reviewer='cascade' WHERE subject_type='character' "
-                  "AND subject_id=? AND status='pending'", row["id"])
-        engine.advance_project(pid)
-    elif entity == "location":
-        if status == "rejected":
-            db.ex("UPDATE state_event SET status='rejected', reviewer='cascade' WHERE subject_type='location' "
-                  "AND subject_id=? AND status='pending'", row["id"])
+            db.ex("UPDATE state_event SET status='rejected', reviewer='cascade' WHERE subject_type=? "
+                  "AND subject_id=? AND status='pending'", entity, row["id"])
         engine.advance_project(pid)
     elif entity == "event":
         engine.mark_recheck_after(pid, row["chapter_idx"])
@@ -66,18 +60,12 @@ def _after(entity: str, row: dict, status: str) -> None:
             engine.regen_ref(row["id"])
         else:
             engine.advance_producing(pid)
-    elif entity == "beat_image":
+    elif entity in ("beat_image", "segment_audio"):
         if status != "approved":
             db.ex("UPDATE chapter SET status='producing' WHERE id=? AND status='done'", row["chapter_id"])
-        if auto_regen and row["image_regen"] < max_regen:
-            engine.regen_beat_image(row["id"])
-        else:
-            engine.advance_chapter(row["chapter_id"])
-    elif entity == "segment_audio":
-        if status != "approved":
-            db.ex("UPDATE chapter SET status='producing' WHERE id=? AND status='done'", row["chapter_id"])
-        if auto_regen and row["audio_regen"] < max_regen:
-            engine.regen_audio(row["id"])
+        regen_col = "image_regen" if entity == "beat_image" else "audio_regen"
+        if auto_regen and row[regen_col] < max_regen:
+            (engine.regen_beat_image if entity == "beat_image" else engine.regen_audio)(row["id"])
         else:
             engine.advance_chapter(row["chapter_id"])
 
@@ -106,7 +94,6 @@ def bulk(entity: str, chapter_id: int | None, project_id: int, status: str, revi
 
 
 def pending_counts(project_id: int) -> dict[str, int]:
-    """Một câu truy vấn cho mọi loại (gọi ở mọi trang)."""
     parts, args = [], []
     for ent, (table, col, _, _) in ENTITIES.items():
         parts.append(f"SELECT '{ent}' e, COUNT(*) n FROM {table} WHERE project_id=? AND {col}='pending'")

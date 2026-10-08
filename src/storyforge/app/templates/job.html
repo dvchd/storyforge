@@ -2,7 +2,7 @@
 {% block content %}
 <h1>Job #{{ j.id }} · {{ j.kind }} · {{ j.status }}</h1>
 <p>Cho {{ j.owner_type }}:{{ j.owner_id }} · lần {{ j.attempts }}/{{ j.max_attempts }} · worker {{ j.worker_id }} · model {{ j.model_id or j.model_hint }} · {{ j.elapsed|secs }}
-{% if j.tokens_in %} · {{ j.tokens_in }} token vào, {{ j.tokens_out }} token ra{% endif %}</p>
+{% if j.tokens_in %} · {{ j.tokens_in }} token vào, {{ j.tokens_out }} token ra{% endif %}{% if j.stalls %} · bị thu hồi {{ j.stalls }} lần vì đứng yên{% endif %}</p>
 {% if j.error %}<div class="banner bad"><pre>{{ j.error }}</pre></div>{% endif %}
 <h3>Payload</h3><pre class="code">{{ payload }}</pre>
 <h3>Kết quả</h3><pre class="code">{{ output }}</pre>

@@ -1,8 +1,8 @@
 """Adapter giả lập: chạy toàn bộ quy trình không cần model AI.
 
-Dùng để thử giao diện, cổng duyệt và luồng dữ liệu trước khi gắn model thật.
-MockLLM đoán tên riêng theo cụm chữ viết hoa lặp lại (không gắn với truyện mẫu nào),
-nhận diện vài mẫu câu về trang phục, vết thương, sẹo, phá hủy bối cảnh.
+MockLLM đoán tên riêng theo cụm chữ viết hoa (không gắn với truyện mẫu nào), nhận diện vài mẫu câu
+về trang phục, vết thương, sẹo, tuổi, phá hủy / trang trí bối cảnh. Mô tả thị giác viết bằng tiếng Anh;
+riêng trang phục được lấy nguyên văn tiếng Việt để minh họa cờ "Mô tả không phải tiếng Anh".
 """
 from __future__ import annotations
 
@@ -23,18 +23,16 @@ from storyforge.protocol import ClaimedJob, ImageGeneratePayload, LlmChatPayload
 from .base import Adapter, AdapterResult, JobContext
 
 LOC_PREPS = ("tại", "ở", "đến", "tới", "về", "vào", "rời", "trong", "ra", "khỏi", "quanh", "phố", "làng", "quán")
+PLACE_WORDS = {"Tông", "Các", "Rừng", "Quán", "Nhà", "Phố", "Núi", "Điện", "Thành", "Trấn", "Sông", "Hồ", "Cung",
+               "Viện", "Đường", "Làng", "Chợ", "Cầu", "Động", "Đảo", "Lâu", "Phủ", "Miếu", "Chùa", "Tháp"}
 STOP = {"Chương", "Hắn", "Nàng", "Cô", "Anh", "Ông", "Bà", "Sáng", "Chiều", "Tối", "Đêm", "Khi", "Sau", "Trước",
         "Một", "Hai", "Ba", "Cả", "Ngay", "Rồi", "Nhưng", "Và", "Lúc", "Trên", "Dưới", "Giữa", "Không", "Cậu", "Lão",
         "Tiểu", "Đệ", "Mặt", "Ngươi", "Ta", "Tôi", "Em", "Chị", "Mẹ", "Bố", "Cha", "Con", "Đây", "Đó", "Vâng", "Ừ",
-        "Phía", "Bên", "Thấy", "Tết", "Chào", "Hôm", "Ngoài", "Bức", "Cảm", "Mọi", "Những", "Các", "Nếu", "Vì", "Thế", "Có", "Đã", "Lần", "Coi", "Bám", "Hôm", "Ngày", "Năm"}
-
-
-PLACE_WORDS = {"Tông", "Các", "Rừng", "Quán", "Nhà", "Phố", "Núi", "Điện", "Thành", "Trấn", "Sông", "Hồ", "Cung",
-               "Viện", "Đường", "Làng", "Chợ", "Cầu", "Động", "Đảo", "Lâu", "Phủ", "Miếu", "Chùa", "Tháp"}
+        "Phía", "Bên", "Thấy", "Tết", "Chào", "Hôm", "Ngoài", "Bức", "Cảm", "Mọi", "Những", "Các", "Nếu", "Vì",
+        "Thế", "Có", "Đã", "Lần", "Coi", "Bám", "Ngày", "Năm", "Chưa", "Từ", "Đi", "Xa"}
 
 
 def _tokens(text: str) -> list[tuple[str, bool, bool]]:
-    """(từ, đứng đầu câu, ngay sau dấu ngắt như dấu phẩy)."""
     out, start, brk = [], True, False
     for m in re.finditer(r"\w+|[.!?…:\n“\"”,;()]", text):
         w = m.group()
@@ -54,7 +52,6 @@ def _cap(w: str) -> bool:
 
 
 def _candidates(text: str) -> tuple[Counter, Counter]:
-    """Đoán nhân vật và bối cảnh theo cụm chữ viết hoa."""
     toks = _tokens(text)
     chars, locs, starts = Counter(), Counter(), Counter()
     i = 0
@@ -69,7 +66,7 @@ def _candidates(text: str) -> tuple[Counter, Counter]:
             if group:
                 name = " ".join(group)
                 if len(group) == 1 and toks[i][1]:
-                    starts[name] += 1            # một từ đầu câu: chỉ tính nếu lặp nhiều lần
+                    starts[name] += 1
                 else:
                     prev = toks[i - 1][0].lower() if i > 0 else ""
                     (locs if prev in LOC_PREPS else chars)[name] += 1
@@ -102,10 +99,9 @@ class MockLLM(Adapter):
         ctx.report(0.5, task or "")
         out = {"extract": self._extract, "beats": self._beats, "dedupe": self._dedupe}.get(task, lambda m: {"text": "ok"})(p.meta)
         text = json.dumps(out, ensure_ascii=False)
-        return AdapterResult(output={"text": text, "usage": {"prompt_tokens": sum(len(str(m.get("content", ""))) // 4
-                                                                                  for m in p.messages),
-                                                             "completion_tokens": len(text) // 4}},
-                             model_id=self.model)
+        usage = {"prompt_tokens": sum(len(str(m.get("content", ""))) // 4 for m in p.messages),
+                 "completion_tokens": len(text) // 4}
+        return AdapterResult(output={"text": text, "usage": usage}, model_id=self.model)
 
     @staticmethod
     def _known(items: list[dict]) -> dict[str, str]:
@@ -142,6 +138,12 @@ class MockLLM(Adapter):
             if m:
                 events.append({"character": who, "field": "outfit", "value": m.group(2).strip()[:60],
                                "permanent": False, "lasts_chapters": None, "evidence": s})
+            if "xóa hình xăm" in low or "tẩy hình xăm" in low:
+                events.append({"character": who, "field": "mark", "value": "-tattoo", "permanent": True,
+                               "lasts_chapters": None, "evidence": s})
+            elif "hình xăm" in low:
+                events.append({"character": who, "field": "mark", "value": "tattoo", "permanent": True,
+                               "lasts_chapters": None, "evidence": s})
             if "sẹo" in low:
                 side = "right cheek" if "phải" in low else ("left cheek" if "trái" in low else "face")
                 events.append({"character": who, "field": "mark", "value": f"long scar on {side}",
@@ -156,9 +158,8 @@ class MockLLM(Adapter):
             if m:
                 events.append({"character": who, "field": "age", "value": f"{m.group(1)} years old",
                                "permanent": True, "lasts_chapters": None, "evidence": s})
-        sents = _sentences(text)
         return {
-            "summary": " ".join(sents[:2])[:400],
+            "summary": " ".join(_sentences(text)[:2])[:400],
             "new_characters": [{"name": n, "aliases": [], "appearance": f"distinct look for {n}", "role": ""} for n in new_chars],
             "events": events,
             "locations": [{"name": n, "aliases": [], "description": f"scenic view of {n}"} for n in new_locs],
@@ -191,12 +192,10 @@ class MockLLM(Adapter):
         return {"beats": beats}
 
     def _dedupe(self, meta: dict) -> dict:
-        pairs = []
         names = [c["name"] for c in meta.get("characters", [])]
-        for a in names:
-            for b in names:
-                if a != b and b.split()[-1] == a.split()[-1] and len(b.split()) < len(a.split()):
-                    pairs.append({"keep": a, "merge": b, "reason": "tên ngắn trùng phần cuối tên đầy đủ"})
+        pairs = [{"keep": a, "merge": b, "reason": "tên ngắn trùng phần cuối tên đầy đủ"}
+                 for a in names for b in names
+                 if a != b and b.split()[-1] == a.split()[-1] and len(b.split()) < len(a.split())]
         return {"characters": pairs, "locations": []}
 
 
@@ -242,13 +241,12 @@ class MockTTS(Adapter):
         words = re.findall(r"\S+", p.text)
         per_word = float(self.cfg.get("seconds_per_word", 0.28)) / max(0.25, p.rate)
         dur = max(1.0, len(words) * per_word)
-        rate = 16000
         out = ctx.workdir / f"tts_{job.id}.wav"
         with wave.open(str(out), "wb") as wv:
             wv.setnchannels(1)
             wv.setsampwidth(2)
-            wv.setframerate(rate)
-            wv.writeframes(struct.pack("<h", 0) * int(dur * rate))
+            wv.setframerate(16000)
+            wv.writeframes(struct.pack("<h", 0) * int(dur * 16000))
         t, wt = 0.0, []
         for w in words:
             wt.append({"start": round(t, 3), "end": round(t + per_word, 3), "text": w})

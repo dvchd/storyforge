@@ -1,8 +1,4 @@
 # Worker cho Mac Apple Silicon (ví dụ Mac Mini M6). Xem docs/worker.md.
-# - LLM: server tương thích OpenAI chạy sẵn (mlx_lm.server, LM Studio hoặc Ollama)
-# - Ảnh: mflux (MLX, chạy GPU của Mac). Cài: uv tool install --upgrade mflux
-# - TTS: VieNeu-TTS chạy CPU (pip install vieneu) hoặc Edge TTS (pip install edge-tts)
-
 [server]
 url = "http://127.0.0.1:8765"
 token = "DAN_WORKER_TOKEN_VAO_DAY"
@@ -14,34 +10,24 @@ name = "Mac Mini M6"
 memory_mode = "sequential"     # chỉ giữ một model nặng trong RAM
 poll_interval = 2
 heartbeat_every = 20           # tự rút ngắn còn thời gian thuê / 3 nếu cần
-cache_mb = 2048                # giới hạn cache ảnh tham chiếu
+cache_mb = 2048
 # cache_dir = "~/.cache/storyforge-worker"
 
 # ---------------------------------------------------------------- LLM
 # mlx_lm.server --model mlx-community/Qwen3-14B-4bit --port 8080
 # Ollama: base_url = "http://127.0.0.1:11434/v1", model = "qwen3:14b"
-# LM Studio: base_url = "http://127.0.0.1:1234/v1"
 [[adapters]]
 kind = "llm.chat"
 type = "openai"
 base_url = "http://127.0.0.1:8080/v1"
 model = "mlx-community/Qwen3-14B-4bit"
-aliases = ["qwen3-14b"]          # trùng "Model LLM" trong cài đặt dự án để worker ưu tiên
+aliases = ["qwen3-14b"]
 api_key = "local"
-json_mode = "object"             # schema | object | none (tùy server hỗ trợ)
+json_mode = "object"             # schema | object | none
 timeout = 900
 # extra_body = { chat_template_kwargs = { enable_thinking = false } }
 
-# Model dự phòng cho lần thử lại cuối (đặt "Model dự phòng" = "qwen3-32b" trong cài đặt dự án)
-# [[adapters]]
-# kind = "llm.chat"
-# type = "openai"
-# base_url = "http://127.0.0.1:8081/v1"
-# model = "mlx-community/Qwen3-32B-4bit"
-# aliases = ["qwen3-32b"]
-
 # ---------------------------------------------------------------- Ảnh: FLUX.2 klein 4B qua mflux
-# Bản 4B dùng thương mại được (Apache 2.0). Có ảnh tham chiếu thì dùng lệnh edit.
 # THAM SỐ MFLUX ĐỔI THEO PHIÊN BẢN: kiểm tra bằng --help, xem docs/mflux.md.
 [[adapters]]
 kind = "image.generate"
@@ -64,11 +50,8 @@ ref_flag = "--image-paths"
 kind = "tts.synthesize"
 type = "vieneu"
 model = "vieneu-v3-turbo"
-voice = "Thiện Minh"             # giọng nam miền Bắc dựng sẵn; để trống dùng mặc định
-# init = { mode = "v3turbo" }
-# infer = {}
+voice = "Thiện Minh"
 
-# Edge TTS (cần Internet, dịch vụ không chính thức, có mốc từng từ cho phụ đề)
 # [[adapters]]
 # kind = "tts.synthesize"
 # type = "edge_tts"

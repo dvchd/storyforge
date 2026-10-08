@@ -35,14 +35,12 @@ class WorkerClient:
         return ClaimedJob(**r.json())
 
     def heartbeat(self, job_id: int, progress: float | None = None, message: str = "") -> bool:
-        """Gia hạn thuê job, gửi tiến độ. Trả True nếu app yêu cầu hủy."""
         r = self.http.post(f"/api/worker/jobs/{job_id}/heartbeat",
                            json=HeartbeatRequest(progress=progress, message=message).model_dump())
         r.raise_for_status()
         return bool(r.json().get("cancel"))
 
     def fetch_asset(self, asset_id: int, dest: Path) -> str:
-        """Tải file, trả sha256 app khai báo (để worker kiểm tra toàn vẹn)."""
         with self.http.stream("GET", f"/api/worker/assets/{asset_id}") as r:
             r.raise_for_status()
             dest.parent.mkdir(parents=True, exist_ok=True)
@@ -58,9 +56,7 @@ class WorkerClient:
         return r.json()["artifact"]
 
     def complete(self, job_id: int, req: CompleteRequest) -> None:
-        r = self.http.post(f"/api/worker/jobs/{job_id}/complete", json=req.model_dump())
-        r.raise_for_status()
+        self.http.post(f"/api/worker/jobs/{job_id}/complete", json=req.model_dump()).raise_for_status()
 
     def fail(self, job_id: int, req: FailRequest) -> None:
-        r = self.http.post(f"/api/worker/jobs/{job_id}/fail", json=req.model_dump())
-        r.raise_for_status()
+        self.http.post(f"/api/worker/jobs/{job_id}/fail", json=req.model_dump()).raise_for_status()

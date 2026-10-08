@@ -1,13 +1,11 @@
 """Truyện tranh: bố cục động theo góc máy và mật độ thoại, bóng thoại dạng dữ liệu, ghép trang, CBZ/PDF.
 
-- Khổ "page": trang truyện in, hàng khung chia theo góc máy:
-  wide hoặc nhiều thoại -> khung rộng cả hàng; medium -> 2 khung một hàng; close ít thoại -> 3 khung một hàng.
+- Khổ "page": wide hoặc nhiều thoại -> khung rộng cả hàng; medium -> 2 khung một hàng; close ít thoại -> 3 khung.
 - Khổ "webtoon": dải dọc, mỗi nhịp một khung rộng toàn chiều ngang, chiều cao theo góc máy.
 - Bóng thoại lưu thành dữ liệu (tọa độ 0..1 trong khung), không để model vẽ chữ.
 """
 from __future__ import annotations
 
-import io
 import math
 import os
 import zipfile
@@ -18,7 +16,7 @@ from PIL import Image, ImageDraw, ImageFont
 from .checks import norm
 
 ROW_KIND_COLS = {"full": 1, "half": 2, "small": 3}
-ROW_KIND_HEIGHT = {"full": 0.52, "half": 0.42, "small": 0.34}     # theo chiều rộng trang
+ROW_KIND_HEIGHT = {"full": 0.52, "half": 0.42, "small": 0.34}
 WEBTOON_RATIO = {"wide": 0.56, "medium": 0.75, "close": 0.95}
 
 
@@ -42,13 +40,10 @@ def plan_rows(beats: list[tuple[dict, list[dict]]]) -> list[tuple[str, list[dict
     return rows
 
 
-def plan_pages(beats: list[tuple[dict, list[dict]]], page_w: int, page_h: int, margin: int,
-               max_panels: int) -> list[dict]:
-    """Trả về [{width, height, panels: [{beat, x, y, w, h}]}], tọa độ chuẩn hóa trong vùng in (trừ lề)."""
+def plan_pages(beats: list[tuple[dict, list[dict]]], page_w: int, page_h: int, margin: int, max_panels: int) -> list[dict]:
     inner_w, inner_h = page_w - 2 * margin, page_h - 2 * margin
-    rows = plan_rows(beats)
     pages, cur, used = [], [], 0.0
-    for kind, members in rows:
+    for kind, members in plan_rows(beats):
         hpx = ROW_KIND_HEIGHT[kind] * inner_w
         n_cur = sum(len(m) for _, m, _ in cur)
         if cur and (used + hpx > inner_h * 1.02 or n_cur + len(members) > max_panels):
@@ -74,8 +69,7 @@ def plan_pages(beats: list[tuple[dict, list[dict]]], page_w: int, page_h: int, m
     return out
 
 
-def plan_webtoon(beats: list[tuple[dict, list[dict]]], width: int, margin: int, gutter: int,
-                 per_page: int) -> list[dict]:
+def plan_webtoon(beats: list[tuple[dict, list[dict]]], width: int, margin: int, gutter: int, per_page: int) -> list[dict]:
     out = []
     for s in range(0, len(beats), max(1, per_page)):
         chunk = beats[s:s + per_page]
@@ -97,7 +91,25 @@ def panel_px(p: dict, page_w: int, page_h: int, margin: int, gutter: int) -> tup
     return x, y, max(8, int(p["w"] * iw) - gutter), max(8, int(p["h"] * ih) - gutter)
 
 
-# --------------------------------------------------------------- fonts
+# --------------------------------------------------------------- cắt khung từ ảnh gốc
+def crop_box(src_w: float, src_h: float, dst_aspect: float, fx: float, fy: float) -> tuple[float, float, float, float]:
+    """Vùng (x, y, w, h) chuẩn hóa 0..1 trên ảnh gốc khi cắt kiểu cover ra tỉ lệ dst_aspect tại điểm lấy nét."""
+    sa = src_w / max(1e-6, src_h)
+    if dst_aspect >= sa:
+        w, h = 1.0, sa / dst_aspect
+    else:
+        w, h = dst_aspect / sa, 1.0
+    return (1 - w) * fx, (1 - h) * fy, w, h
+
+
+def overlap(a: tuple, b: tuple) -> float:
+    """Phần giao / diện tích vùng nhỏ hơn: 1 = vùng nhỏ nằm trọn trong vùng lớn."""
+    ix = max(0.0, min(a[0] + a[2], b[0] + b[2]) - max(a[0], b[0]))
+    iy = max(0.0, min(a[1] + a[3], b[1] + b[3]) - max(a[1], b[1]))
+    return (ix * iy) / max(1e-9, min(a[2] * a[3], b[2] * b[3]))
+
+
+# --------------------------------------------------------------- font
 FONT_CANDIDATES = [
     "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
     "/System/Library/Fonts/Supplemental/Arial.ttf",
@@ -161,7 +173,6 @@ def wrap(text: str, font, max_w: int) -> list[str]:
 
 
 def balloon_box(b: dict, pw: int, ph: int, font_path: str | None, size: int) -> tuple[int, int, int, list[str], int]:
-    """Kích thước bóng thoại (px): (rộng, cao, lề, các dòng, chiều cao dòng)."""
     bw = max(60, int(b["w"] * pw))
     font = load_font(font_path, size)
     pad = int(size * .7)
@@ -171,7 +182,6 @@ def balloon_box(b: dict, pw: int, ph: int, font_path: str | None, size: int) -> 
 
 
 def fit_size(b: dict, pw: int, ph: int, font_path: str | None, base: int) -> tuple[int, bool]:
-    """Thu nhỏ chữ đến 70% nếu bóng thoại tràn khỏi khung. Trả (cỡ chữ, có tràn không)."""
     size = base
     while True:
         _, bh, _, _, _ = balloon_box(b, pw, ph, font_path, size)
@@ -184,7 +194,6 @@ def fit_size(b: dict, pw: int, ph: int, font_path: str | None, base: int) -> tup
 
 def default_balloons(beat: dict, dialogue: list[dict], char_ids: dict[str, int], pw: int, ph: int,
                      font_path: str | None, base: int) -> list[dict]:
-    """Đặt bóng thoại ở dải trên của khung (tránh vùng giữa thường là mặt nhân vật), xen kẽ trái phải."""
     out: list[dict] = []
     lines = dialogue[:3]
     if not lines:
@@ -200,8 +209,7 @@ def default_balloons(beat: dict, dialogue: list[dict], char_ids: dict[str, int],
         w = min(0.62, max(0.3, 0.22 + len(d["text"]) * 0.004 * (1000 / max(pw, 200))))
         left = i % 2 == 0
         x = 0.03 if left else max(0.03, 0.97 - w)
-        b = {"kind": kind, "text": d["text"], "x": x, "y": y, "w": w,
-             "tail_x": None, "tail_y": None,
+        b = {"kind": kind, "text": d["text"], "x": x, "y": y, "w": w, "tail_x": None, "tail_y": None,
              "character_id": char_ids.get(norm(d.get("character") or ""))}
         _, bh, _, _, _ = balloon_box(b, pw, ph, font_path, base)
         if kind == "speech":
@@ -250,8 +258,7 @@ def draw_balloon(draw: ImageDraw.ImageDraw, box: tuple[int, int, int, int], b: d
     y = by + pad
     for ln in lines:
         tw = draw.textlength(ln, font=font)
-        x = bx + (bw - tw) / 2 if kind != "caption" else bx + pad
-        draw.text((x, y), ln, fill=(10, 10, 10), font=font)
+        draw.text((bx + (bw - tw) / 2 if kind != "caption" else bx + pad, y), ln, fill=(10, 10, 10), font=font)
         y += lh
     return over
 
@@ -289,9 +296,3 @@ def export_pdf(pages: list[Path], out: Path) -> Path:
     if imgs:
         imgs[0].save(out, "PDF", save_all=True, append_images=imgs[1:], resolution=150)
     return out
-
-
-def png_bytes(img: Image.Image) -> bytes:
-    buf = io.BytesIO()
-    img.save(buf, "PNG")
-    return buf.getvalue()

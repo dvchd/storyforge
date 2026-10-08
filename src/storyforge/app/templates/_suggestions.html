@@ -1,6 +1,7 @@
 {% if suggestions %}
 <section class="card" id="suggestions">
-  <div class="bar"><h3>Gợi ý gộp trùng ({{ suggestions|length }})</h3></div>
+  <div class="bar"><h3>Gợi ý gộp trùng ({{ suggestions|length }})</h3>
+    <span class="muted small">Truyện có nhiều người trùng tên con? Đổi "Cách gợi ý gộp trùng" trong Cài đặt sang "Chỉ khi nhờ LLM rà".</span></div>
   {% for s in suggestions %}
   <div class="row sugg">
     <div class="grow">{{ '👤' if s.table == 'character' else '🏞' }} Giữ <b>{{ s.a.name }}</b> <small>#{{ s.a.id }}, từ ch.{{ s.a.first_chapter }}</small>

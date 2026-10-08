@@ -2,13 +2,16 @@
 
 Trạng thái không lưu cố định: sửa một sự kiện ở chương k thì mọi chương sau tự tính lại.
 
-Phân loại trường của nhân vật:
+Nhân vật:
 - Ảnh tham chiếu MẶT phụ thuộc: age, face, mark (dấu vết vĩnh viễn: sẹo, hình xăm...).
 - Ảnh tham chiếu TOÀN THÂN phụ thuộc thêm: outfit, hair, accessory, body.
-- Chỉ đưa vào prompt (không cần ảnh tham chiếu mới): injury (vết thương tạm thời), other.
+- Chỉ đưa vào prompt: injury (vết thương tạm thời), other.
 
-Thương tích có permanent=True được chuẩn hóa thành 'mark' để đổi ảnh mặt ở mọi chương sau.
-'mark' là trường cộng dồn: nhiều sẹo nối với nhau; giá trị rỗng xóa toàn bộ.
+'mark' là trường cộng dồn, mỗi dấu vết là một mục riêng:
+- value "long scar on right cheek"   -> thêm một dấu vết
+- value "-long scar on right cheek"  -> xóa đúng dấu vết đó, giữ các dấu vết khác
+- value ""                          -> xóa toàn bộ dấu vết
+Thương tích có permanent=True được chuẩn hóa thành 'mark'.
 """
 from __future__ import annotations
 
@@ -26,6 +29,7 @@ FACE_FIELDS = ("age", "face", "mark")
 OUTFIT_FIELDS = ("outfit", "hair", "accessory", "body")
 CONDITION_FIELDS = ("injury", "other")
 ACCUMULATE = {"mark"}
+MARK_SEP = "; "
 
 FIELD_ALIASES = {
     "clothes": "outfit", "clothing": "outfit", "costume": "outfit", "dress": "outfit", "armor": "outfit",
@@ -35,8 +39,6 @@ FIELD_ALIASES = {
     "appearance": "face", "physique": "body", "build": "body",
 }
 
-# Bối cảnh: trạng thái lâu dài (bị phá hủy, trang trí lễ hội...). Biến thể ánh sáng/thời tiết
-# (night, rain...) là của từng nhịp, không phải trạng thái.
 LOC_FIELDS = ["condition", "decor", "other"]
 LOC_FIELD_LABELS = {"condition": "Hiện trạng", "decor": "Trang trí", "other": "Khác"}
 LOC_ALIASES = {"state": "condition", "damage": "condition", "ruin": "condition", "decoration": "decor"}
@@ -55,6 +57,18 @@ def normalize_field(f: str, permanent: bool = False, subject: str = "character")
     return f
 
 
+def is_removal(value: str) -> bool:
+    return (value or "").strip().startswith("-")
+
+
+def removal_target(value: str) -> str:
+    return (value or "").strip().lstrip("-").strip()
+
+
+def _same(a: str, b: str) -> bool:
+    return re.sub(r"\s+", " ", a.strip().lower()) == re.sub(r"\s+", " ", b.strip().lower())
+
+
 def resolve(events: list[dict], chapter_idx: int) -> dict[str, str]:
     state: dict[str, str] = {}
     marks: list[str] = []
@@ -66,11 +80,13 @@ def resolve(events: list[dict], chapter_idx: int) -> dict[str, str]:
         if f in ACCUMULATE:
             if expired:
                 continue
-            if v:
-                if v not in marks:
-                    marks.append(v)
-            else:
+            if not v:
                 marks = []
+            elif is_removal(v):
+                t = removal_target(v)
+                marks = [m for m in marks if not _same(m, t)]
+            elif not any(_same(m, v) for m in marks):
+                marks.append(v)
             continue
         if expired:
             if state.get(f) == v:
@@ -81,8 +97,12 @@ def resolve(events: list[dict], chapter_idx: int) -> dict[str, str]:
         else:
             state.pop(f, None)
     if marks:
-        state["mark"] = "; ".join(marks)
+        state["mark"] = MARK_SEP.join(marks)
     return state
+
+
+def marks_of(state: dict) -> list[str]:
+    return [m for m in (state.get("mark") or "").split(MARK_SEP) if m.strip()]
 
 
 def events_of(subject_type: str, subject_id: int) -> list[dict]:
@@ -107,10 +127,8 @@ def timeline(subject_type: str, subject_id: int, chapters: list[dict]) -> list[d
     return out
 
 
-def _key(state: dict, fields: tuple[str, ...], extra: str = "") -> str:
+def _key(state: dict, fields: tuple[str, ...]) -> str:
     parts = [f"{f}={state[f]}" for f in fields if state.get(f)]
-    if extra:
-        parts.append(extra)
     if not parts:
         return "base"
     return hashlib.sha1("|".join(parts).encode()).hexdigest()[:12]

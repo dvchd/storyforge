@@ -13,7 +13,6 @@ from pydantic import BaseModel, Field, field_validator
 SHOTS = ("wide", "medium", "close")
 
 
-# ------------------------------------------------------------ schemas
 class NewCharacter(BaseModel):
     name: str
     aliases: list[str] = Field(default_factory=list)
@@ -107,7 +106,6 @@ class DedupeOut(BaseModel):
     locations: list[DupPair] = Field(default_factory=list)
 
 
-# ------------------------------------------------------------ helpers
 _FENCE = re.compile(r"```(?:json)?\s*(.*?)```", re.S)
 
 
@@ -140,10 +138,9 @@ def schema_of(model: type[BaseModel]) -> dict:
 
 def span_issues(beats: list[BeatOut], n: int) -> list[str]:
     """Kiểm tra beat phủ kín 1..n, liên tiếp, không chồng lấn."""
-    issues = []
     if not beats:
         return ["Danh sách beats rỗng"]
-    expect = 1
+    issues, expect = [], 1
     for i, b in enumerate(sorted(beats, key=lambda b: (b.start, b.end)), 1):
         if b.end < b.start:
             issues.append(f"beat {i}: end ({b.end}) nhỏ hơn start ({b.start})")
@@ -159,7 +156,6 @@ def span_issues(beats: list[BeatOut], n: int) -> list[str]:
     return issues
 
 
-# ------------------------------------------------------------ prompts
 EXTRACT_SYSTEM = """Bạn là trợ lý biên tập truyện. Nhiệm vụ: theo dõi nhân vật, bối cảnh và thay đổi ngoại hình qua từng chương để vẽ minh họa nhất quán.
 
 Chỉ trả về MỘT đối tượng JSON hợp lệ theo schema, không thêm chữ nào khác.
@@ -167,13 +163,14 @@ Chỉ trả về MỘT đối tượng JSON hợp lệ theo schema, không thêm
 Quy tắc chung:
 - Chỉ ghi điều được nói rõ trong chương. Không suy đoán, không bịa.
 - "evidence" phải trích NGUYÊN VĂN một câu có trong chương.
-- Các trường mô tả thị giác ("appearance", "value", "description") viết bằng tiếng Anh, ngắn gọn, dùng cho model vẽ ảnh.
+- BẮT BUỘC viết bằng TIẾNG ANH các trường mô tả thị giác: "appearance", "value", "description". Đây là đầu vào cho model vẽ ảnh, model không hiểu tiếng Việt. Tên riêng giữ nguyên.
 - Nhân vật / bối cảnh đã có trong danh sách: dùng đúng tên chính, KHÔNG tạo mới. Gặp tên gọi khác của người đã biết thì vẫn dùng tên chính.
 - Chỉ thêm nhân vật mới khi họ xuất hiện trực tiếp trong cảnh, không thêm người chỉ được nhắc tên.
 
 Sự kiện nhân vật ("events"):
 - "field" thuộc: outfit, hair, injury, mark, age, body, face, accessory, other.
-- "injury": vết thương tạm thời (băng bó, bầm tím). "mark": dấu vết VĨNH VIỄN trên cơ thể (sẹo, hình xăm), ghi rõ vị trí, ví dụ "long scar on right cheek".
+- "injury": vết thương tạm thời (băng bó, bầm tím). "mark": dấu vết VĨNH VIỄN (sẹo, hình xăm), mỗi dấu vết một sự kiện riêng, ghi rõ vị trí, ví dụ "long scar on right cheek".
+- Xóa MỘT dấu vết cụ thể (ví dụ xóa hình xăm): field "mark", value là dấu vết đó có dấu trừ phía trước, ví dụ "-dragon tattoo on left arm".
 - "value" rỗng "" nghĩa là trạng thái đó kết thúc (tháo băng, cởi áo giáp).
 - "permanent": true cho thay đổi vĩnh viễn. "lasts_chapters": số chương trạng thái tạm thời kéo dài nếu truyện cho biết, không biết thì null.
 
@@ -181,7 +178,7 @@ Bối cảnh:
 - "locations": các nơi xuất hiện trong chương (chưa có trong danh sách). KHÔNG tách bối cảnh theo ngày/đêm/mưa.
 - "location_events": thay đổi lâu dài của bối cảnh, "field" thuộc condition (bị phá hủy, cháy...), decor (trang trí lễ hội...), other.
 
-"summary": tóm tắt chương bằng tiếng Việt, 2 đến 4 câu, giữ các sự kiện quan trọng."""
+"summary": tóm tắt chương bằng tiếng Việt, 2 đến 4 câu."""
 
 BEATS_SYSTEM = """Bạn chia một chương truyện thành các nhịp (beat) để minh họa. Mỗi beat là một khung hình.
 
@@ -191,15 +188,15 @@ Quy tắc:
 - Đoạn văn đánh số [1]..[n]. Mỗi beat là một khoảng đoạn liên tiếp "start".."end".
 - BẮT BUỘC: các beat nối tiếp nhau, phủ toàn bộ chương từ 1 đến n, không chồng lấn, không bỏ sót.
 - Mỗi beat thường gồm 1 đến 4 đoạn; cắt khi đổi cảnh, đổi hành động chính hoặc đổi người nói.
-- "location": đúng tên bối cảnh trong danh sách. "variant": ánh sáng/thời tiết của cảnh: default, dawn, day, dusk, night, rain, snow, fog...
-- "cast": tối đa 3 nhân vật thực sự xuất hiện trong khung hình, dùng đúng tên chính. "pose", "expression" bằng tiếng Anh.
+- "location": đúng tên bối cảnh trong danh sách. "variant": ánh sáng/thời tiết: default, dawn, day, dusk, night, rain, snow, fog...
+- "cast": tối đa 3 nhân vật thực sự xuất hiện trong khung hình, dùng đúng tên chính.
 - "shot": wide (toàn cảnh, mở cảnh), medium, close (cận mặt, cảm xúc).
-- "action", "mood": tiếng Anh, mô tả thị giác ngắn gọn để vẽ ảnh.
+- "pose", "expression", "action", "mood": BẮT BUỘC TIẾNG ANH, mô tả thị giác ngắn gọn để vẽ ảnh.
 - "dialogue": lời thoại nguyên văn bằng ngôn ngữ gốc, kèm "character" là người nói, "kind" là speech, thought hoặc caption."""
 
 DEDUPE_SYSTEM = """Bạn rà soát danh sách nhân vật và bối cảnh của một bộ truyện để tìm các mục BỊ TRÙNG (cùng một người / một nơi nhưng bị ghi thành hai mục do viết tắt, biệt danh, cách xưng hô, lỗi chính tả).
 
-Chỉ trả về MỘT đối tượng JSON. "keep" là tên mục giữ lại (thường xuất hiện sớm hơn), "merge" là tên mục gộp vào. Chỉ liệt kê khi chắc chắn; người khác nhau có tên gần giống thì KHÔNG gộp. "reason" bằng tiếng Việt, ngắn."""
+Chỉ trả về MỘT đối tượng JSON. "keep" là tên mục giữ lại (thường xuất hiện sớm hơn), "merge" là tên mục gộp vào. Chỉ liệt kê khi chắc chắn; người khác nhau có tên gần giống hoặc trùng tên con thì KHÔNG gộp. "reason" bằng tiếng Việt, ngắn."""
 
 
 def _chars_block(chars: list[dict], describe) -> str:
@@ -268,5 +265,5 @@ def dedupe_messages(chars: list[dict], locs: list[dict]) -> list[dict]:
     ll = "\n".join(f"- {l['name']} (từ chương {l['first_chapter']}; {l.get('description') or ''})" for l in locs) or "(trống)"
     example = {"characters": [{"keep": "Lâm An", "merge": "An ca", "reason": "An ca là cách gọi thân mật Lâm An"}],
                "locations": []}
-    user = (f"NHÂN VẬT:\n{cl}\n\nBỐI CẢNH:\n{ll}\n\nVí dụ JSON:\n{json.dumps(example, ensure_ascii=False)}")
+    user = f"NHÂN VẬT:\n{cl}\n\nBỐI CẢNH:\n{ll}\n\nVí dụ JSON:\n{json.dumps(example, ensure_ascii=False)}"
     return [{"role": "system", "content": DEDUPE_SYSTEM}, {"role": "user", "content": user}]

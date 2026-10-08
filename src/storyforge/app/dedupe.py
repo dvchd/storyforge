@@ -1,13 +1,20 @@
-"""Gợi ý và gộp nhân vật / bối cảnh bị trùng (do viết tắt, biệt danh, lỗi chính tả)."""
+"""Gợi ý và gộp nhân vật / bối cảnh bị trùng (do viết tắt, biệt danh, lỗi chính tả).
+
+Chế độ (cài đặt dự án "dedupe_mode"):
+- fuzzy: tự gợi ý khi tên gần giống (ngưỡng dedupe_threshold, mặc định 0.90; tên một chữ không tự khớp tên dài)
+- llm_only: không gợi ý theo tên, chỉ khi bấm "Nhờ LLM rà trùng" (hợp với truyện nhiều người trùng tên con)
+- off: tắt gợi ý; vẫn gộp tay được
+"""
 from __future__ import annotations
 
 from . import checks, engine, jobs, llm
-from .db import db, jd, jl, now
+from .db import db, jd, jl
 
 
 def scan(pid: int) -> int:
-    """Quét gần đúng toàn dự án, thêm gợi ý mới. Trả số gợi ý mới."""
     p = engine.project(pid)
+    if p["settings"].get("dedupe_mode", "fuzzy") != "fuzzy":
+        return 0
     thr = float(p["settings"]["dedupe_threshold"])
     before = db.val("SELECT COUNT(*) FROM suggestion WHERE project_id=?", pid) or 0
     for kind, rows in (("merge_character", engine.all_chars(pid)), ("merge_location", engine.locs(pid))):
@@ -22,9 +29,10 @@ def scan(pid: int) -> int:
 
 def enqueue_llm(pid: int) -> int:
     p = engine.project(pid)
+    if p["settings"].get("dedupe_mode") == "off":
+        return 0
     chars, locs = engine.all_chars(pid), engine.locs(pid)
-    msgs = llm.dedupe_messages(chars, locs)
-    payload = engine._llm_payload(p, msgs, llm.DedupeOut, "DedupeOut", {
+    payload = engine._llm_payload(p, llm.dedupe_messages(chars, locs), llm.DedupeOut, "DedupeOut", {
         "task": "dedupe", "characters": [{"name": c["name"], "aliases": c["aliases"]} for c in chars],
         "locations": [{"name": l["name"], "aliases": l["aliases"]} for l in locs]})
     return jobs.enqueue(pid, "llm.chat", payload, "project_dedupe", pid, model_hint=p["settings"]["llm_model"], priority=3)
@@ -58,23 +66,20 @@ def open_suggestions(pid: int) -> list[dict]:
 def _replace_in_cast(pid: int, src: int, dst: int, dst_name: str) -> None:
     for b in db.q("SELECT id, cast_json FROM beat WHERE project_id=?", pid):
         cast = jl(b["cast_json"], [])
-        changed = False
+        if not any(c.get("character_id") == src for c in cast):
+            continue
+        seen, uniq = set(), []
         for c in cast:
             if c.get("character_id") == src:
                 c["character_id"], c["name"] = dst, dst_name
-                changed = True
-        if changed:
-            seen, uniq = set(), []
-            for c in cast:
-                if c["character_id"] not in seen:
-                    seen.add(c["character_id"])
-                    uniq.append(c)
-            db.update("beat", b["id"], cast_json=jd(uniq))
+            if c["character_id"] not in seen:
+                seen.add(c["character_id"])
+                uniq.append(c)
+        db.update("beat", b["id"], cast_json=jd(uniq))
 
 
 def merge(kind: str, keep_id: int, merge_id: int, reviewer: str = "user") -> dict:
     table = "character" if kind == "merge_character" else "location"
-    subj = table
     keep, src = db.get(table, keep_id), db.get(table, merge_id)
     if not keep or not src or keep_id == merge_id:
         raise ValueError("Không gộp được")
@@ -88,7 +93,7 @@ def merge(kind: str, keep_id: int, merge_id: int, reviewer: str = "user") -> dic
         if table == "location" and not keep["description"] and src["description"]:
             cols["description"] = src["description"]
         db.update(table, keep_id, **cols)
-        db.ex("UPDATE state_event SET subject_id=? WHERE subject_type=? AND subject_id=?", keep_id, subj, merge_id)
+        db.ex("UPDATE state_event SET subject_id=? WHERE subject_type=? AND subject_id=?", keep_id, table, merge_id)
         if table == "character":
             _replace_in_cast(pid, merge_id, keep_id, keep["name"])
             db.ex("UPDATE balloon SET character_id=? WHERE character_id=?", keep_id, merge_id)
@@ -102,14 +107,12 @@ def merge(kind: str, keep_id: int, merge_id: int, reviewer: str = "user") -> dic
         db.ex("UPDATE suggestion SET status='dismissed' WHERE kind=? AND status='open' AND (a_id=? OR b_id=?)",
               kind, merge_id, merge_id)
     engine.audit(pid, table, keep_id, "merge", reviewer, f"gộp {src['name']}")
-    engine.mark_recheck_after(pid, min(keep["first_chapter"], src["first_chapter"]) - 1)
+    first = min(keep["first_chapter"], src["first_chapter"])
+    engine.mark_recheck_after(pid, first - 1)
     engine.advance_project(pid)
-    engine.refresh_refs(pid, min(keep["first_chapter"], src["first_chapter"]))
+    engine.refresh_refs(pid, first)
     return db.get(table, keep_id)
 
 
 def dismiss(sid: int) -> None:
     db.update("suggestion", sid, status="dismissed")
-
-
-now  # giữ import

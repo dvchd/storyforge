@@ -9,7 +9,7 @@
       {% if c.needs_recheck %}<span class="flag" title="Trạng thái ở chương trước đã đổi">cần rà lại</span>{% endif %}
       {% if c.active %}<span class="pill" title="Job đang chờ/chạy">⚙ {{ c.active }}</span>{% endif %}</td>
     <td>{{ m.steps(c.status) }} <span class="st st-{{ c.status }}">{{ STATUS_LABELS.get(c.status, c.status) }}</span>
-      {% if c.error %}<div class="err small">{{ c.error[:160] }}</div>{% endif %}</td>
+      {% if c.error %}<div class="err small">{{ c.error[:200] }}</div>{% endif %}</td>
     <td class="small" style="min-width:160px">{% if c.progress.images %}{{ m.progress(c.progress.pct, 'Ảnh ' ~ c.progress.images_ok ~ '/' ~ c.progress.images ~ (' · Giọng ' ~ c.progress.audio_ok ~ '/' ~ c.progress.audio if c.progress.audio else '')) }}{% endif %}</td>
     <td>{% if c.pending %}<a class="pill warn" href="/p/{{ p.id }}/review?chapter={{ c.id }}">{{ c.pending }}</a>{% endif %}</td>
     <td class="nowrap">

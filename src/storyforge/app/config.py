@@ -21,7 +21,9 @@ class Settings:
     # Job chờ lâu được cộng thêm 1 điểm ưu tiên mỗi aging_seconds, tối đa aging_cap.
     aging_seconds: int = 300
     aging_cap: int = 5
-    lease: dict = field(default_factory=dict)
+    lease: dict = field(default_factory=dict)      # ghi đè thời gian thuê theo loại job
+    stall: dict = field(default_factory=dict)      # ghi đè ngưỡng "đứng yên" theo loại job (giây, 0 = tắt)
+    watchdog_every: float = 30.0
 
     @property
     def db_path(self) -> Path:

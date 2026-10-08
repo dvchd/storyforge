@@ -14,7 +14,7 @@ import time
 from pathlib import Path
 from typing import Any, Iterator
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -75,7 +75,6 @@ CREATE TABLE IF NOT EXISTS location(
   reviewer TEXT NOT NULL DEFAULT '',
   created_at REAL
 );
--- Sự kiện trạng thái cho cả nhân vật và bối cảnh (subject_type).
 CREATE TABLE IF NOT EXISTS state_event(
   id INTEGER PRIMARY KEY,
   project_id INTEGER NOT NULL REFERENCES project(id) ON DELETE CASCADE,
@@ -117,7 +116,6 @@ CREATE TABLE IF NOT EXISTS ref(
   created_at REAL,
   UNIQUE(owner_type, owner_id, state_key)
 );
--- Nhịp truyện. Mỗi nhịp có MỘT ảnh gốc dùng chung cho video và truyện tranh.
 CREATE TABLE IF NOT EXISTS beat(
   id INTEGER PRIMARY KEY,
   project_id INTEGER NOT NULL REFERENCES project(id) ON DELETE CASCADE,
@@ -136,7 +134,6 @@ CREATE TABLE IF NOT EXISTS beat(
   status TEXT NOT NULL DEFAULT 'pending',
   flags_json TEXT NOT NULL DEFAULT '[]',
   reviewer TEXT NOT NULL DEFAULT '',
-  -- ảnh gốc của nhịp
   img_width INTEGER NOT NULL DEFAULT 0,
   img_height INTEGER NOT NULL DEFAULT 0,
   seed INTEGER NOT NULL DEFAULT 0,
@@ -204,13 +201,13 @@ CREATE TABLE IF NOT EXISTS balloon(
 CREATE TABLE IF NOT EXISTS suggestion(
   id INTEGER PRIMARY KEY,
   project_id INTEGER NOT NULL REFERENCES project(id) ON DELETE CASCADE,
-  kind TEXT NOT NULL,              -- merge_character | merge_location
-  a_id INTEGER NOT NULL,           -- giữ lại
-  b_id INTEGER NOT NULL,           -- gộp vào a
+  kind TEXT NOT NULL,
+  a_id INTEGER NOT NULL,
+  b_id INTEGER NOT NULL,
   score REAL NOT NULL DEFAULT 0,
   reason TEXT NOT NULL DEFAULT '',
   source TEXT NOT NULL DEFAULT 'fuzzy',
-  status TEXT NOT NULL DEFAULT 'open',   -- open | merged | dismissed
+  status TEXT NOT NULL DEFAULT 'open',
   created_at REAL,
   UNIQUE(kind, a_id, b_id)
 );
@@ -243,6 +240,9 @@ CREATE TABLE IF NOT EXISTS job(
   lease_until REAL,
   progress REAL,
   progress_msg TEXT NOT NULL DEFAULT '',
+  heartbeat_at REAL,
+  last_progress_at REAL,
+  stalls INTEGER NOT NULL DEFAULT 0,
   output_json TEXT NOT NULL DEFAULT '',
   model_id TEXT NOT NULL DEFAULT '',
   tokens_in INTEGER NOT NULL DEFAULT 0,
@@ -287,7 +287,6 @@ def now() -> float:
 
 
 def jl(s: Any, default: Any = None) -> Any:
-    """json.loads an toàn."""
     if s is None or s == "":
         return default
     if isinstance(s, (dict, list)):
@@ -331,12 +330,6 @@ class Database:
             self._local.depth = 0
         return c
 
-    def close(self) -> None:
-        c = getattr(self._local, "c", None)
-        if c is not None:
-            c.close()
-            self._local.c = None
-
     @contextlib.contextmanager
     def tx(self) -> Iterator[sqlite3.Connection]:
         c = self.conn()
@@ -356,7 +349,6 @@ class Database:
             if self._local.depth == 0:
                 c.execute("COMMIT")
 
-    # ---------------------------------------------------------- helpers
     def q(self, sql: str, *p: Any) -> list[dict]:
         return [dict(r) for r in self.conn().execute(sql, p).fetchall()]
 
@@ -377,8 +369,7 @@ class Database:
     def insert(self, table: str, **cols: Any) -> int:
         keys = list(cols)
         sql = f"INSERT INTO {table}({','.join(keys)}) VALUES({','.join('?' * len(keys))})"
-        cur = self.conn().execute(sql, [cols[k] for k in keys])
-        return int(cur.lastrowid)
+        return int(self.conn().execute(sql, [cols[k] for k in keys]).lastrowid)
 
     def update(self, table: str, id_: Any, **cols: Any) -> None:
         if not cols:

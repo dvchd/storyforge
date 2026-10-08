@@ -1,6 +1,4 @@
-"""Adapter cho model thật. Thư viện chỉ được import khi adapter được dùng,
-nên máy không cài thư viện đó vẫn chạy được các adapter khác.
-"""
+"""Adapter cho model thật. Thư viện chỉ được import khi adapter được dùng."""
 from __future__ import annotations
 
 import asyncio
@@ -13,9 +11,7 @@ from .base import Adapter, AdapterResult, Cancelled, JobContext, probe_duration
 
 
 class DiffusersImage(Adapter):
-    """Tạo ảnh bằng diffusers. Hỗ trợ ảnh tham chiếu với pipeline nhận tham số image
-    (ví dụ FLUX.2 klein: black-forest-labs/FLUX.2-klein-4B). Chạy CUDA, MPS hoặc CPU.
-    """
+    """diffusers; hỗ trợ ảnh tham chiếu với pipeline nhận tham số image (ví dụ FLUX.2 klein). CUDA, MPS hoặc CPU."""
     kind = "image.generate"
     type_name = "diffusers"
     heavy = True
@@ -81,7 +77,7 @@ class DiffusersImage(Adapter):
 
         try:
             img = self.pipe(**kw, callback_on_step_end=on_step).images[0]
-        except TypeError:   # pipeline cũ không có callback_on_step_end
+        except TypeError:
             img = self.pipe(**kw).images[0]
         out = ctx.workdir / f"img_{job.id}.png"
         img.save(out)
@@ -89,9 +85,7 @@ class DiffusersImage(Adapter):
 
 
 class EdgeTTS(Adapter):
-    """Microsoft Edge TTS (công cụ không chính thức, cần Internet; xem điều khoản trước khi dùng thương mại).
-    Giọng tiếng Việt: vi-VN-HoaiMyNeural, vi-VN-NamMinhNeural. Trả mốc thời gian từng từ để làm phụ đề.
-    """
+    """Microsoft Edge TTS (không chính thức, cần Internet). Giọng: vi-VN-HoaiMyNeural, vi-VN-NamMinhNeural."""
     kind = "tts.synthesize"
     type_name = "edge_tts"
 
@@ -126,9 +120,7 @@ class EdgeTTS(Adapter):
 
 
 class VieNeuTTS(Adapter):
-    """VieNeu-TTS (pip install vieneu). Chạy CPU qua ONNX, không cần GPU.
-    voice: tên giọng dựng sẵn (ví dụ "Thiện Minh"); hoặc đặt ref_audio để bắt chước giọng.
-    """
+    """VieNeu-TTS (pip install vieneu), chạy CPU qua ONNX. voice: giọng dựng sẵn (ví dụ "Thiện Minh")."""
     kind = "tts.synthesize"
     type_name = "vieneu"
     heavy = True

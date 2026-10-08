@@ -13,6 +13,12 @@ import json
 from . import state as st
 
 SHOT_TEXT = {"wide": "wide establishing shot", "medium": "medium shot", "close": "close-up shot"}
+# Gợi ý bố cục để ảnh gốc cắt được cả khung video lẫn khung truyện mà không mất đầu.
+SHOT_COMPOSITION = {
+    "wide": "Keep important subjects near the center of the frame",
+    "medium": "Keep characters near the center, heads in the upper half with headroom",
+    "close": "Face in the upper third of the frame, whole head visible with headroom above",
+}
 VARIANT_TEXT = {"default": "", "day": "daytime", "dawn": "at dawn, soft early light", "dusk": "at dusk, warm low sun",
                 "night": "at night, moonlight", "rain": "in the rain, wet surfaces", "snow": "in snow",
                 "fog": "in thick fog"}
@@ -52,7 +58,8 @@ def scene_prompt(style: str, beat: dict, cast: list[dict], loc: dict | None, loc
         + (f", {c['pose']}" if c.get("pose") else "")
         + (f", {c['expression']} expression" if c.get("expression") else "")
         for c in cast)
-    parts = [style, SHOT_TEXT.get(beat.get("shot") or "medium", "medium shot")]
+    shot = beat.get("shot") or "medium"
+    parts = [style, SHOT_TEXT.get(shot, "medium shot")]
     if loc:
         vt = variant_text(beat.get("variant", "default"))
         cond = st.describe(loc_state, st.LOC_FIELDS)
@@ -66,7 +73,8 @@ def scene_prompt(style: str, beat: dict, cast: list[dict], loc: dict | None, loc
     roles = " ".join(f"Reference image {i} is {r}." for i, r in enumerate(ref_roles, 1))
     if roles:
         parts.append(roles + " Keep faces, marks and outfits consistent with the references")
-    parts.append("Keep important subjects near the center of the frame. No text, no speech bubbles, no watermark")
+    parts.append(SHOT_COMPOSITION.get(shot, SHOT_COMPOSITION["medium"]))
+    parts.append("No text, no speech bubbles, no watermark")
     return ". ".join(p.strip().rstrip(".") for p in parts if p) + "."
 
 
@@ -85,7 +93,6 @@ def seed_for(*parts: object) -> int:
 
 
 def word_diff(old: str, new: str) -> str:
-    """HTML so sánh theo từ: <del> phần bị bỏ, <ins> phần mới."""
     a, b = (old or "").split(), (new or "").split()
     out = []
     for op, i1, i2, j1, j2 in difflib.SequenceMatcher(None, a, b).get_opcodes():

@@ -1,6 +1,6 @@
 # Worker cho máy NVIDIA. Cài: pip install -e ".[diffusers,edge]"
 [server]
-url = "http://192.168.1.10:8765"     # địa chỉ máy chạy app
+url = "http://192.168.1.10:8765"
 token = "DAN_WORKER_TOKEN_VAO_DAY"
 
 [worker]
@@ -10,7 +10,7 @@ memory_mode = "sequential"
 [[adapters]]
 kind = "llm.chat"
 type = "openai"
-base_url = "http://127.0.0.1:8000/v1"   # vLLM
+base_url = "http://127.0.0.1:8000/v1"
 model = "Qwen/Qwen3-14B-AWQ"
 aliases = ["qwen3-14b"]
 json_mode = "schema"
@@ -23,7 +23,6 @@ repo = "black-forest-labs/FLUX.2-klein-4B"
 dtype = "bf16"
 default_steps = 4
 max_refs = 4
-# cpu_offload = true
 
 [[adapters]]
 kind = "tts.synthesize"

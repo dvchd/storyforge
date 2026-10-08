@@ -2,7 +2,7 @@
 {% import "_macros.html" as m %}
 {% block content %}
 <div class="bar"><h1>Bối cảnh</h1>
-  <form method="post" action="/p/{{ p.id }}/dedupe/scan" class="inline"><button class="ghost">Quét tên gần giống</button></form></div>
+  {% if p.settings.dedupe_mode == 'fuzzy' %}<form method="post" action="/p/{{ p.id }}/dedupe/scan" class="inline"><button class="ghost">Quét tên gần giống</button></form>{% endif %}</div>
 <p class="muted small">Một bối cảnh có nhiều ảnh tham chiếu theo biến thể của từng nhịp (ngày, đêm, mưa...) và theo hiện trạng qua các chương (bị phá hủy, trang trí...).</p>
 {% set suggestions = suggestions|selectattr('table', 'equalto', 'location')|list %}
 {% include "_suggestions.html" %}

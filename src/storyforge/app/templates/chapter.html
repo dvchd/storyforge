@@ -8,7 +8,7 @@
   {{ m.steps(ch.status) }} <span class="st st-{{ ch.status }}">{{ STATUS_LABELS.get(ch.status, ch.status) }}</span>
   {% if ch.needs_recheck %}<span class="flag">trạng thái chương trước đã đổi, nên trích lại</span>{% endif %}
 </div>
-{% if ch.error %}<div class="banner bad">{{ ch.error }} <form method="post" action="/c/{{ ch.id }}/retry" class="inline"><button>Thử lại</button></form></div>{% endif %}
+{% if ch.error %}<div class="banner bad">{{ ch.error }} {% if ch.status == 'error' %}<form method="post" action="/c/{{ ch.id }}/retry" class="inline"><button>Thử lại</button></form>{% endif %}</div>{% endif %}
 <div class="bar">
   {% if ch.status == 'new' %}<form method="post" action="/c/{{ ch.id }}/run" class="inline"><button class="ok">Chạy chương</button></form>{% endif %}
   <details class="inline-menu"><summary class="ghostbtn">Chạy lại…</summary>
@@ -16,7 +16,7 @@
     <form method="post" action="/c/{{ ch.id }}/reset" onsubmit="return confirm('Chia nhịp lại? Khung và ảnh cảnh của chương sẽ bị xóa.')"><input type="hidden" name="to" value="beats"><button class="ghost">Chia nhịp lại</button></form>
   </details>
   {% if stale %}<form method="post" action="/c/{{ ch.id }}/regen-stale" class="inline"><button>Tạo lại {{ stale }} ảnh cũ</button></form>{% endif %}
-  {% if ch.status == 'done' %}<form method="post" action="/c/{{ ch.id }}/publish" class="inline"><button class="ok">Xuất bản (dựng video / ghép trang)</button></form>{% endif %}
+  {% if ch.status == 'done' %}<form method="post" action="/c/{{ ch.id }}/publish" class="inline"><button class="ok" {% if missing_tools() and p.mode == 'video' %}disabled title="Thiếu ffmpeg"{% endif %}>Xuất bản (dựng video / ghép trang)</button></form>{% endif %}
   {% if p.mode in ('video','both') %}<a href="/p/{{ p.id }}/c/{{ ch.id }}/preview/video">▶ Xem trước video</a>{% endif %}
   {% if p.mode in ('comic','both') %}<a href="/p/{{ p.id }}/c/{{ ch.id }}/preview/comic">▤ Xem trước truyện</a>{% endif %}
   {% if ch.video_asset_id %}<a href="{{ media(ch.video_asset_id) }}?download=1">Tải MP4</a>{% endif %}
@@ -24,7 +24,7 @@
   {% if ch.comic_cbz_asset_id %}<a href="{{ media(ch.comic_cbz_asset_id) }}?download=1">Tải CBZ</a>{% endif %}
   {% if ch.comic_pdf_asset_id %}<a href="{{ media(ch.comic_pdf_asset_id) }}?download=1">Tải PDF</a>{% endif %}
   <form method="post" action="/c/{{ ch.id }}/policy" class="inline">
-    <select name="level" onchange="this.form.submit()" title="Đặt cấp riêng cho chương. Các ghi đè cổng của dự án vẫn được giữ.">
+    <select name="level" onchange="this.form.submit()" title="Đặt cấp riêng cho chương. Ghi đè cổng của dự án vẫn được giữ.">
       <option value="">Cấp duyệt: theo dự án</option>
       {% for k, v in LEVELS.items() %}<option value="{{ k }}" {% if cpol.get('level')==k %}selected{% endif %}>Chương này: {{ v.label }}</option>{% endfor %}
     </select></form>
@@ -60,7 +60,7 @@
           <optgroup label="Nhân vật">{% for c in all_chars %}<option value="character:{{ c.id }}">{{ c.name }}</option>{% endfor %}</optgroup>
           <optgroup label="Bối cảnh">{% for l in all_locs %}<option value="location:{{ l.id }}">{{ l.name }}</option>{% endfor %}</optgroup></select></label>
         <label>Trường
-          <select name="field" x-show="subj=='character'">{% for f in FIELDS %}<option value="{{ f }}">{{ FIELD_LABELS[f] }}</option>{% endfor %}</select>
+          <select name="field" x-show="subj=='character'" :disabled="subj!='character'">{% for f in FIELDS %}<option value="{{ f }}">{{ FIELD_LABELS[f] }}</option>{% endfor %}</select>
           <select name="field" x-show="subj=='location'" :disabled="subj!='location'">{% for f in LOC_FIELDS %}<option value="{{ f }}">{{ LOC_FIELD_LABELS[f] }}</option>{% endfor %}</select></label>
         <label>Giá trị (tiếng Anh) <input name="value"></label>
         <label>Đến chương <input name="until_chapter"></label>
@@ -68,8 +68,10 @@
         <label class="span4">Bằng chứng <input name="evidence"></label>
         <button>Thêm</button></form></details>
     <h3>Trạng thái tại chương này</h3>
+    <p class="muted small">Dấu vết vĩnh viễn hiện dạng chip: bấm × để xóa riêng dấu vết đó từ chương này, giữ các dấu vết khác.</p>
     <table class="tbl small"><tr><th>Nhân vật</th>{% for f in FIELDS %}<th>{{ FIELD_LABELS[f] }}</th>{% endfor %}</tr>
-      {% for s in states %}<tr><td><a href="/p/{{ p.id }}/characters/{{ s.c.id }}">{{ s.c.name }}</a></td>{% for f in FIELDS %}<td>{{ s.state.get(f, '') }}</td>{% endfor %}</tr>{% endfor %}</table>
+      {% for s in states %}<tr><td><a href="/p/{{ p.id }}/characters/{{ s.c.id }}">{{ s.c.name }}</a></td>
+        {% for f in FIELDS %}<td>{% if f == 'mark' %}{{ m.mark_chips(s.c.id, marks_of(s.state), ch.id) }}{% else %}{{ s.state.get(f, '') }}{% endif %}</td>{% endfor %}</tr>{% endfor %}</table>
     {% if loc_states %}<table class="tbl small"><tr><th>Bối cảnh</th>{% for f in LOC_FIELDS %}<th>{{ LOC_FIELD_LABELS[f] }}</th>{% endfor %}</tr>
       {% for s in loc_states %}<tr><td><a href="/p/{{ p.id }}/locations/{{ s.l.id }}">{{ s.l.name }}</a></td>{% for f in LOC_FIELDS %}<td>{{ s.state.get(f, '') }}</td>{% endfor %}</tr>{% endfor %}</table>{% endif %}
   </section>
@@ -81,7 +83,8 @@
 
   <section x-show="t=='prod'" x-cloak class="kbd-scope">
     {% if progress.images %}{{ m.progress(progress.pct, 'Ảnh ' ~ progress.images_ok ~ '/' ~ progress.images ~ ' · Giọng ' ~ progress.audio_ok ~ '/' ~ progress.audio) }}{% endif %}
-    <p class="muted small">Mỗi nhịp có MỘT ảnh gốc, dùng chung cho video và truyện tranh. Chọn điểm lấy nét để cắt khung phù hợp.</p>
+    <p class="muted small">Mỗi nhịp có MỘT ảnh gốc dùng chung cho video và truyện tranh. Khung <span class="dot v"></span>xanh là vùng video, <span class="dot c"></span>cam là vùng khung truyện. Mặc định lấy nét theo góc máy (cận mặt lấy cao hơn).
+      {% if crops %}<b>{{ crops }} nhịp có hai khung lệch nhau nhiều.</b>{% endif %}</p>
     <div class="bar">
       <form method="post" action="/p/{{ p.id }}/review/bulk" class="inline"><input type="hidden" name="entity" value="beat_image"><input type="hidden" name="chapter_id" value="{{ ch.id }}"><button class="ok">Duyệt tất cả ảnh chờ</button></form>
       {% if p.mode in ('video','both') %}<form method="post" action="/p/{{ p.id }}/review/bulk" class="inline"><input type="hidden" name="entity" value="segment_audio"><input type="hidden" name="chapter_id" value="{{ ch.id }}"><button class="ok">Duyệt tất cả giọng chờ</button></form>{% endif %}

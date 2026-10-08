@@ -7,58 +7,48 @@ new → extracting → review_state → state_ready → beating → review_beats
                                                                                     ↘ error (thử lại được)
 ```
 
-- `new`: chờ chạy (bật **Tự chạy** cho dự án hoặc bấm **Chạy**). Chương k chỉ trích trạng thái khi chương k−1 đã `state_ready`.
-- `review_state`: chờ duyệt nhân vật/bối cảnh mới và sự kiện trạng thái.
-- `review_beats`: chờ duyệt nhịp. Duyệt xong app dựng khung sản xuất (đoạn video, trang/khung truyện) và chuyển `producing`.
-- `producing`: tạo ảnh tham chiếu → ảnh gốc từng nhịp → giọng đọc. Xong hết thì `done`.
-- Xuất bản (dựng MP4, ghép trang) là job cục bộ chạy trong app.
+Chương k chỉ trích trạng thái khi chương k−1 đã `state_ready`. Các bước sau chạy song song giữa các chương.
 
 ## Bảng chính
 
 | Bảng | Ý nghĩa |
 |---|---|
-| `character`, `location` | Danh tính; `aliases_json` chứa tên gọi khác |
-| `state_event` | Sự kiện trạng thái của nhân vật **hoặc** bối cảnh (`subject_type`, `subject_id`) |
-| `ref` | Ảnh tham chiếu: `character_face`, `character_outfit`, `location`; khóa theo `state_key` |
-| `beat` | Nhịp truyện + **ảnh gốc** (`image_*`, `prompt_override`, `image_locked`) |
-| `segment` | Đoạn video: lời đọc, giọng, thời lượng, mốc thời gian, điểm lấy nét, chuyển động |
-| `page`, `panel`, `balloon` | Trang, khung (tọa độ chuẩn hóa), bóng thoại (dữ liệu) |
+| `character`, `location` | Danh tính, tên gọi khác |
+| `state_event` | Sự kiện trạng thái của nhân vật hoặc bối cảnh (`subject_type`, `subject_id`) |
+| `ref` | Ảnh tham chiếu `character_face`, `character_outfit`, `location`, khóa theo `state_key` |
+| `beat` | Nhịp + **ảnh gốc** (`image_*`, `prompt_override`, `image_locked`) |
+| `segment` | Đoạn video: lời đọc, giọng, mốc thời gian, điểm lấy nét, chuyển động |
+| `page`, `panel`, `balloon` | Trang, khung (tọa độ chuẩn hóa, điểm lấy nét), bóng thoại |
 | `suggestion` | Gợi ý gộp trùng |
-| `asset` | Tệp theo sha256, `input_hash` để dùng lại kết quả |
-| `job`, `worker`, `audit`, `meta` | Hàng đợi, worker, nhật ký, phiên bản schema |
+| `asset` | Tệp theo sha256; `input_hash` để dùng lại kết quả |
+| `job` | Hàng đợi; `heartbeat_at`, `last_progress_at`, `stalls` cho watchdog |
 
-## Khóa ảnh tham chiếu
+## Trạng thái nhân vật
 
-- Mặt: `face_key(state)` từ `age`, `face`, `mark`.
-- Toàn thân: `outfit_key(state)` từ `outfit`, `hair`, `accessory`, `body` + các trường của mặt.
-- Bối cảnh: `location_key(state, variant)` = biến thể của nhịp (`default`, `night`, `rain`...) + hiện trạng (`condition`, `decor`).
+| Trường | Ảnh hưởng |
+|---|---|
+| `age`, `face`, `mark` | Ảnh tham chiếu **mặt** (và toàn thân) |
+| `outfit`, `hair`, `accessory`, `body` | Ảnh tham chiếu **toàn thân** |
+| `injury`, `other` | Chỉ đưa vào prompt |
 
-Khi mô tả nhân vật (appearance) hoặc ảnh mặt đổi, ảnh tham chiếu chưa khóa được tạo lại tự động. Ảnh **đã khóa** giữ nguyên prompt bạn sửa tay.
+`mark` cộng dồn: mỗi giá trị thêm một dấu vết; `-<dấu vết>` xóa đúng dấu vết đó; rỗng xóa hết. Trên giao diện, mỗi dấu vết là một chip có nút ×.
 
-## Ảnh gốc dùng chung
+Bối cảnh: `condition`, `decor`, `other` theo chương; biến thể ánh sáng/thời tiết thuộc từng nhịp. Ảnh tham chiếu bối cảnh khóa theo `biến thể + hiện trạng`.
 
-Kích thước ảnh gốc của nhịp:
-- chỉ video: tỉ lệ video (mặc định 1344×768);
-- chỉ truyện: tỉ lệ khung của nhịp;
-- cả hai: trung bình nhân của hai tỉ lệ, giới hạn 0.55–1.95; diện tích theo `image_area`.
+## Ảnh gốc dùng chung và khung cắt
 
-Đoạn video và khung truyện cắt (cover) từ ảnh gốc theo **điểm lấy nét** chọn trên giao diện (giữa, trên, dưới, trái, phải...). Prompt ảnh có câu nhắc giữ chủ thể gần giữa khung để cắt an toàn.
+Kích thước ảnh gốc: chỉ video → tỉ lệ video; chỉ truyện → tỉ lệ khung; cả hai → trung bình nhân hai tỉ lệ (giới hạn 0.55–1.95); diện tích theo `image_area` (trang Cài đặt gợi ý giá trị đủ để không phải phóng to).
+
+Mỗi khung cắt kiểu cover tại **điểm lấy nét**. Mặc định theo góc máy: close (0.5, 0.35), medium (0.5, 0.42), wide (0.5, 0.5). Ảnh gốc trên giao diện có hai khung chồng lên: xanh là video, cam là truyện. Khi phần giao < `crop_overlap_min` (0.6) hiện cảnh báo "khung video và truyện lệch nhau"; bấm "Theo video" để đồng bộ.
 
 ## Ảnh cũ
 
-Ảnh gốc mang `image_hash` = hash(prompt, sha256 các ảnh tham chiếu, seed, model, kích thước). Khi trạng thái/mô tả đổi:
-1. App tạo trước ảnh tham chiếu mới cho các chương đã sản xuất (`refresh_refs`).
-2. Ảnh cảnh có hash khác hiện nhãn **ảnh cũ**; bấm để xem khác biệt prompt (`<del>`/`<ins>`) và ảnh tham chiếu đã đổi.
-3. Nút **Tạo lại N ảnh cũ** ở chương; ảnh đã khóa được bỏ qua.
-
-Tạo lại không xóa ảnh cũ ngay: nếu bạn quay lại đúng đầu vào cũ, app dùng lại ngay (theo `input_hash`). Dọn ở trang **Dung lượng**.
+Ảnh gốc mang `image_hash` = hash(prompt, sha256 ảnh tham chiếu, seed, model, kích thước). Sửa trạng thái/mô tả: app tạo trước ảnh tham chiếu mới (`refresh_refs`), ảnh cảnh bị ảnh hưởng hiện nhãn "ảnh cũ" kèm khác biệt prompt; nút "Tạo lại N ảnh cũ" bỏ qua ảnh đã khóa.
 
 ## Truyện tranh
 
-- Khổ **trang**: hàng khung theo góc máy (wide hoặc ≥3 lời thoại → rộng cả hàng; medium → 2 khung; close ít thoại → 3 khung), tối đa `comic_max_panels` khung/trang, các hàng giãn đều cho kín trang.
-- Khổ **webtoon**: mỗi nhịp một khung rộng toàn chiều ngang, cao theo góc máy, `webtoon_panels_per_page` khung mỗi ảnh xuất.
-- Bóng thoại đặt ở dải trên, xen kẽ trái phải, rộng theo độ dài chữ. Khi ghép trang, chữ tự thu nhỏ đến 70%; còn tràn thì gắn cờ `text_overflow`.
+Trang in: hàng khung theo góc máy (wide hoặc ≥3 lời thoại → rộng cả hàng; medium → 2; close ít thoại → 3), tối đa `comic_max_panels`. Webtoon: mỗi nhịp một khung toàn chiều ngang. Bóng thoại đặt ở dải trên, chữ tự thu nhỏ đến 70%, còn tràn thì gắn cờ.
 
 ## Video
 
-Mỗi đoạn: cắt theo điểm lấy nét → chuyển động (tự động: wide lia ngang, medium zoom vào/ra luân phiên, close zoom vào) → mờ đầu/cuối → audio `loudnorm` + khoảng lặng. Nối bằng concat không mã hóa lại. Phụ đề: mốc từng từ nếu TTS có, không thì mốc câu, không nữa thì chia theo số âm tiết; câu dài tách ở dấu phẩy, tối đa 2 dòng 42 ký tự.
+Mỗi đoạn: cắt theo điểm lấy nét → chuyển động theo góc máy → mờ đầu/cuối → loudnorm + khoảng lặng. Phụ đề theo mốc từ, rồi mốc câu, rồi theo số âm tiết. Cần ffmpeg; thiếu thì job báo lỗi kèm hướng dẫn cài.

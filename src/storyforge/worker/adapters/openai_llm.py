@@ -1,7 +1,4 @@
-"""LLM qua API tương thích OpenAI.
-
-Dùng được với: mlx_lm.server, LM Studio, Ollama (/v1), llama.cpp server, vLLM, OpenRouter, OpenAI...
-"""
+"""LLM qua API tương thích OpenAI: mlx_lm.server, LM Studio, Ollama (/v1), llama.cpp, vLLM, OpenRouter, OpenAI..."""
 from __future__ import annotations
 
 import httpx
@@ -19,10 +16,10 @@ class OpenAICompatLLM(Adapter):
         super().__init__(cfg)
         self.base_url = str(cfg.get("base_url", "http://localhost:8080/v1")).rstrip("/")
         self.api_key = str(cfg.get("api_key", "local"))
-        self.json_mode = str(cfg.get("json_mode", "object"))      # schema | object | none
+        self.json_mode = str(cfg.get("json_mode", "object"))
         self.timeout = float(cfg.get("timeout", 900))
         self.extra = dict(cfg.get("extra_body", {}))
-        self._loaded = True   # server LLM tự quản lý model
+        self._loaded = True
 
     def _post(self, body: dict) -> httpx.Response:
         try:
@@ -33,7 +30,7 @@ class OpenAICompatLLM(Adapter):
 
     def run(self, job: ClaimedJob, ctx: JobContext) -> AdapterResult:
         p = LlmChatPayload(**job.payload)
-        model = job.model_hint if job.model_hint and job.model_hint not in self.aliases[1:] else self.model
+        model = self.model
         body: dict = {"model": model, "messages": p.messages, "temperature": p.temperature, **self.extra}
         if p.max_tokens:
             body["max_tokens"] = p.max_tokens
@@ -45,11 +42,11 @@ class OpenAICompatLLM(Adapter):
         ctx.report(0.05, f"gửi tới {model}")
         r = self._post(body)
         if r.status_code == 400 and "response_format" in body:
-            body.pop("response_format")       # server không hỗ trợ: thử lại không ép JSON
+            body.pop("response_format")
             r = self._post(body)
         if r.status_code >= 500 or r.status_code == 429:
             raise RetryableError(f"LLM {r.status_code}: {r.text[:500]}")
         r.raise_for_status()
         data = r.json()
-        text = data["choices"][0]["message"].get("content") or ""
-        return AdapterResult(output={"text": text, "usage": data.get("usage", {})}, model_id=data.get("model") or model)
+        return AdapterResult(output={"text": data["choices"][0]["message"].get("content") or "",
+                                     "usage": data.get("usage", {})}, model_id=data.get("model") or model)

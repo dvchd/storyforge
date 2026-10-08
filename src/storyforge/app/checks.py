@@ -9,6 +9,7 @@ from . import state as st
 
 _WS = re.compile(r"\s+")
 _SENT = re.compile(r"(?<=[.!?…:;])\s+|\n+")
+_VI_CHARS = re.compile(r"[àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ]")
 
 
 def norm(s: str) -> str:
@@ -30,10 +31,7 @@ def sentences(text: str) -> list[str]:
 
 
 def evidence_score(evidence: str, text: str) -> float:
-    """0..1: mức câu trích khớp với một câu (hoặc hai câu liền nhau) trong chương.
-
-    So theo từng câu thay vì cả chương để chương dài không làm sai lệch kết quả.
-    """
+    """0..1: mức câu trích khớp một câu (hoặc hai câu liền nhau) trong chương. So theo câu để chương dài không làm sai."""
     ev = norm(evidence).strip(' "\'')
     if len(ev) < 6:
         return 0.0
@@ -47,7 +45,6 @@ def evidence_score(evidence: str, text: str) -> float:
         if len(w) < 0.5 * len(ev):
             continue
         sm = difflib.SequenceMatcher(None, ev, w, autojunk=False)
-        # chỉ tính khối khớp từ 4 ký tự để câu dài không cộng dồn ký tự lẻ
         cover = sum(b.size for b in sm.get_matching_blocks() if b.size >= 4) / len(ev)
         best = max(best, min(1.0, cover))
         if best >= 0.99:
@@ -60,7 +57,6 @@ def evidence_found(evidence: str, text: str, threshold: float = 0.9) -> bool:
 
 
 def locate(evidence: str, paras: list[str]) -> int | None:
-    """Trả về chỉ số đoạn (1-based) chứa câu trích tốt nhất."""
     best, idx = 0.0, None
     for i, p in enumerate(paras, 1):
         s = evidence_score(evidence, p)
@@ -69,20 +65,23 @@ def locate(evidence: str, paras: list[str]) -> int | None:
     return idx if best >= 0.75 else None
 
 
-# ------------------------------------------------------------- names
+# ------------------------------------------------------------- tên
 def name_similarity(a: str, b: str) -> float:
+    """Độ giống tên 0..1.
+
+    - Bỏ dấu khớp tuyệt đối (Lam An ~ Lâm An): 1.0
+    - Viết tắt cùng số chữ (L. An ~ Lâm An): 0.9
+    - Một tên là tập con của tên kia, CHỈ khi tên ngắn có từ 2 chữ trở lên
+      (Lâm An ~ Lâm An Nhiên: 0.86). Tên một chữ (An, Minh) không tự khớp vào tên dài
+      vì truyện thường có nhiều người trùng tên con.
+    - Còn lại: tỉ lệ giống chuỗi.
+    """
     fa, fb = fold(a), fold(b)
     if not fa or not fb:
         return 0.0
     if fa == fb:
         return 1.0
     ta, tb = fa.split(), fb.split()
-    # "An" và "Lâm An", "Tiểu An": một tên là phần đuôi / tập con của tên kia
-    if (set(ta) <= set(tb) or set(tb) <= set(ta)) and min(len(ta), len(tb)) >= 1:
-        short = ta if len(ta) <= len(tb) else tb
-        if len(" ".join(short)) >= 2:
-            return 0.86
-    # viết tắt: "L. An" ~ "Lâm An"
     if len(ta) == len(tb) and any(x.endswith(".") for x in ta + tb):
         def same(x: str, y: str) -> bool:
             if x.endswith("."):
@@ -92,11 +91,15 @@ def name_similarity(a: str, b: str) -> float:
             return x == y
         if all(same(x, y) for x, y in zip(ta, tb)):
             return 0.9
+    short, long_ = (ta, tb) if len(ta) <= len(tb) else (tb, ta)
+    if len(short) >= 2 and set(short) <= set(long_):
+        return 0.86
+    if len(short) == 1 or len(long_) == 1:
+        return min(0.6, difflib.SequenceMatcher(None, fa, fb).ratio())
     return difflib.SequenceMatcher(None, fa, fb).ratio()
 
 
 def best_match(name: str, candidates: dict[str, int]) -> tuple[int | None, float]:
-    """candidates: tên/tên gọi khác -> id. Trả id gần nhất và điểm."""
     best_id, best = None, 0.0
     for cand, cid in candidates.items():
         s = name_similarity(name, cand)
@@ -105,7 +108,22 @@ def best_match(name: str, candidates: dict[str, int]) -> tuple[int | None, float
     return best_id, best
 
 
-# ------------------------------------------------------------- events
+# ------------------------------------------------------------- ngôn ngữ prompt
+def non_english(text: str, names: list[str] | tuple[str, ...] = ()) -> bool:
+    """Mô tả cho model ảnh có vẻ đang viết tiếng Việt (bỏ qua tên riêng đã biết)."""
+    t = norm(text)
+    if not t:
+        return False
+    for n in sorted({norm(x) for x in names if x}, key=len, reverse=True):
+        t = t.replace(n, " ")
+    words = re.findall(r"\w+", t)
+    if not words:
+        return False
+    vi = sum(1 for w in words if _VI_CHARS.search(w))
+    return vi >= 2 or vi / len(words) >= 0.3
+
+
+# ------------------------------------------------------------- sự kiện
 def event_flags(field: str, value: str, permanent: bool, evidence: str, chapter_text: str,
                 current: dict[str, str]) -> list[str]:
     flags: list[str] = []
@@ -113,6 +131,16 @@ def event_flags(field: str, value: str, permanent: bool, evidence: str, chapter_
         flags.append("evidence_missing")
     if permanent or field == "mark":
         flags.append("permanent")
+    if field == "mark":
+        marks = st.marks_of(current)
+        if st.is_removal(value):
+            if not any(st._same(m, st.removal_target(value)) for m in marks):
+                flags.append("conflict")
+        elif not value and not marks:
+            flags.append("conflict")
+        elif value and any(st._same(m, value) for m in marks):
+            flags.append("redundant")
+        return flags
     if not value and field not in current:
         flags.append("conflict")
     if value and current.get(field) == value:

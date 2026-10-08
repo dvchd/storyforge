@@ -1,7 +1,18 @@
 {% extends "base.html" %}
 {% block content %}
-<h1>Dung lượng và sao lưu</h1>
+<h1>Hệ thống, dung lượng và sao lưu</h1>
 {% if result %}<div class="banner ok">{{ result }}</div>{% endif %}
+<section class="card" id="system">
+  <h3>Công cụ hệ thống</h3>
+  {% set miss = missing_tools() %}
+  <table class="tbl small">
+    <tr><td>ffmpeg</td><td><code>{{ cfg.ffmpeg }}</code></td><td>{{ '✗ thiếu' if 'ffmpeg' in miss else '✓' }}</td><td>Dựng video</td></tr>
+    <tr><td>ffprobe</td><td><code>{{ cfg.ffprobe }}</code></td><td>{{ '✗ thiếu' if 'ffprobe' in miss else '✓' }}</td><td>Đo thời lượng audio</td></tr>
+    <tr><td>Font</td><td><code>{{ font or '(mặc định của Pillow)' }}</code></td><td>{{ '✓' if font else '⚠' }}</td><td>Chữ có dấu trong bóng thoại; đặt STORYFORGE_FONT nếu cần</td></tr>
+  </table>
+  {% if miss %}<p class="err">{{ INSTALL_HINT }}</p>{% endif %}
+  <p class="muted small">Kiểm tra nhanh từ dòng lệnh: <code>storyforge-app doctor</code></p>
+</section>
 <div class="cols">
 <section class="card">
   <h3>Tài nguyên</h3>
@@ -14,7 +25,7 @@
 </section>
 <section class="card">
   <h3>Dọn dẹp</h3>
-  <p class="small muted">Xóa ảnh và audio không còn được dùng: các lần tạo cũ, dự án đã xóa, file lạc. Bản cũ chỉ có ích khi bạn quay lại đúng đầu vào cũ.</p>
+  <p class="small muted">Xóa ảnh và audio không còn được dùng: các lần tạo cũ, dự án đã xóa, file lạc.</p>
   <form method="post" action="/storage/gc" class="stack">
     <label>Chỉ xóa tài nguyên cũ hơn (giờ) <input name="hours" type="number" step="0.5" value="24"></label>
     <span><button name="dry_run" value="1" class="ghost">Thử trước</button> <button onclick="return confirm('Xóa vĩnh viễn?')">Dọn dẹp</button></span>

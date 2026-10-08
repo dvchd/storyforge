@@ -1,14 +1,12 @@
 # Dùng mflux trên Mac
 
-[mflux](https://github.com/filipstrand/mflux) chạy các model tạo ảnh bằng MLX trên GPU của Apple Silicon. StoryForge gọi mflux qua **dòng lệnh** (adapter `mflux` = adapter `command`), nên không phụ thuộc API Python của mflux.
+StoryForge gọi [mflux](https://github.com/filipstrand/mflux) qua **dòng lệnh** (adapter `mflux` = `command`), không phụ thuộc API Python của mflux.
 
 ```bash
 uv tool install --upgrade mflux
 mflux-generate-flux2 --help
 mflux-generate-flux2-edit --help
 ```
-
-## Mẫu cấu hình (FLUX.2 klein 4B)
 
 ```toml
 [[adapters]]
@@ -26,27 +24,20 @@ cmd_with_refs = ["mflux-generate-flux2-edit", "--model", "flux2-klein-4b", "-q",
 ref_flag = "--image-paths"
 ```
 
-- `cmd` dùng khi không có ảnh tham chiếu (ảnh mặt đầu tiên, ảnh bối cảnh), `cmd_with_refs` khi có.
-- `{refs}` được thay bằng `--image-paths a.png b.png ...`. Nếu phiên bản của bạn cần lặp cờ cho từng ảnh (`--image a.png --image b.png`), dùng `{refs_repeat}` và `ref_flag = "--image"`.
+Nếu phiên bản của bạn cần lặp cờ cho từng ảnh (`--image a.png --image b.png`): dùng `{refs_repeat}` và `ref_flag = "--image"`.
 
 ## Khi tham số đổi theo phiên bản
 
-1. Chạy `--help`, đối chiếu tên lệnh và tên cờ (`--image-paths`, `--steps`, `-q`, `--output`...).
-2. Sửa mảng `cmd`/`cmd_with_refs` trong `worker.toml`. Không cần sửa code.
-3. Thử nhanh: tạo một dự án 1 chương, bật cấp duyệt 4, xem job ở trang Hàng đợi (trang chi tiết job có payload và lỗi đầy đủ).
-
-Lỗi thường gặp:
+1. Chạy `--help`, đối chiếu tên lệnh và tên cờ.
+2. Sửa `cmd` / `cmd_with_refs` trong `worker.toml`, không cần sửa code.
+3. Thử với dự án 1 chương, cấp duyệt 4; trang chi tiết job có payload và lỗi đầy đủ.
 
 | Lỗi | Nguyên nhân |
 |---|---|
-| `unrecognized arguments` | Tên cờ đã đổi: sửa mẫu lệnh |
-| `Không thấy file kết quả` | Cờ output khác (`--output` / `-o`) hoặc mflux tự thêm hậu tố: kiểm tra thư mục job |
-| Ảnh không giống nhân vật | Lệnh đang dùng `cmd` thay vì `cmd_with_refs`; kiểm tra `ref_flag` |
-| Chậm | Giảm `image_area` trong cài đặt dự án, dùng `-q 4`, giảm `default_steps` |
+| `unrecognized arguments` | Tên cờ đã đổi |
+| `Không thấy file kết quả` | Cờ output khác hoặc mflux tự thêm hậu tố |
+| Ảnh không giống nhân vật | Đang dùng `cmd` thay vì `cmd_with_refs`; kiểm tra `ref_flag` |
+| Chậm | Bấm "Dùng diện tích ảnh gốc gợi ý" trong Cài đặt, dùng `-q 4`, giảm `default_steps` |
+| Job bị thu hồi vì đứng yên | Phiên bản mflux không in tiến độ: tăng ngưỡng `stall` cho `image.generate` |
 
-## Model khác
-
-- **Z-Image Turbo**: đẹp, nhanh, không nhận ảnh tham chiếu. Dùng cho ảnh bối cảnh qua một adapter riêng có alias, rồi đặt "Model ảnh" phù hợp; hoặc dùng LoRA nhân vật.
-- **FLUX.2 klein 9B**: nhận tới 4 ảnh tham chiếu, chất lượng cao hơn, **giấy phép phi thương mại**.
-
-Tiến độ: mflux in thanh tiến độ dạng `37%` hoặc `3/4`, worker đọc và hiển thị trên trang Hàng đợi. Bấm Hủy sẽ dừng tiến trình mflux ngay.
+FLUX.2 klein 9B nhận tới 4 ảnh tham chiếu nhưng là giấy phép phi thương mại. Z-Image Turbo nhanh, đẹp, không nhận ảnh tham chiếu.

@@ -27,6 +27,16 @@
 </span>
 {%- endmacro %}
 
+{% macro mark_chips(cid, marks, chapter_id, with_since=False) -%}
+{% for m in marks %}{% set text = m.text if m is mapping else m %}
+<span class="chip mark">{{ text }}{% if with_since %} <small>từ ch.{{ m.since }}</small>{% endif %}
+  <form class="inline" hx-post="/character/{{ cid }}/mark/remove" hx-target="closest .chip" hx-swap="outerHTML"
+        hx-confirm="Xóa dấu vết '{{ text }}' từ chương này trở đi? Các dấu vết khác giữ nguyên.">
+    <input type="hidden" name="mark" value="{{ text }}"><input type="hidden" name="chapter_id" value="{{ chapter_id }}">
+    <button class="x" title="Xóa riêng dấu vết này">×</button></form></span>
+{% endfor %}
+{%- endmacro %}
+
 {% macro character_row(c) -%}
 <div class="row card char" x-data="{edit:false}" tabindex="0">
   <div class="thumb">{% if c.face_asset %}<img src="{{ media(c.face_asset) }}" loading="lazy">{% else %}<div class="ph">?</div>{% endif %}</div>
@@ -39,7 +49,7 @@
     <form x-show="edit" x-cloak hx-post="/character/{{ c.id }}/edit" hx-target="closest .row" hx-swap="outerHTML" class="stack">
       <label>Tên <input name="name" value="{{ c.name }}"></label>
       <label>Tên gọi khác (phân cách bằng dấu phẩy) <input name="aliases" value="{{ c.aliases|join(', ') }}"></label>
-      <label>Ngoại hình (tiếng Anh, cho model ảnh; đổi sẽ tạo lại ảnh tham chiếu) <textarea name="appearance" rows="2">{{ c.appearance }}</textarea></label>
+      <label>Ngoại hình (TIẾNG ANH, cho model ảnh; đổi sẽ tạo lại ảnh tham chiếu) <textarea name="appearance" rows="2">{{ c.appearance }}</textarea></label>
       <label>Vai trò <input name="role" value="{{ c.role }}"></label>
       <label>Ghi chú riêng <textarea name="notes" rows="2">{{ c.notes }}</textarea></label>
       <button>Lưu</button>
@@ -60,7 +70,7 @@
     <form x-show="edit" x-cloak hx-post="/location/{{ l.id }}/edit" hx-target="closest .row" hx-swap="outerHTML" class="stack">
       <label>Tên <input name="name" value="{{ l.name }}"></label>
       <label>Tên gọi khác <input name="aliases" value="{{ l.aliases|join(', ') }}"></label>
-      <label>Mô tả (tiếng Anh) <textarea name="description" rows="2">{{ l.description }}</textarea></label>
+      <label>Mô tả (TIẾNG ANH) <textarea name="description" rows="2">{{ l.description }}</textarea></label>
       <button>Lưu</button>
     </form>
   </div>
@@ -72,13 +82,14 @@
 <div class="row card" x-data="{edit:false}" tabindex="0">
   <div class="grow">
     <div class="head">{{ '👤' if e.subject_type == 'character' else '🏞' }} <b>{{ e.subject_name }}</b> · chương {{ e.chapter_idx }} · {{ e.labels.get(e.field, e.field) }}:
-      {% if e.value %}<code>{{ e.value }}</code>{% else %}<i>kết thúc trạng thái</i>{% endif %}
+      {% if e.field == 'mark' and is_removal(e.value) %}<i>xóa dấu vết</i> <code class="strike">{{ removal_target(e.value) }}</code>
+      {% elif e.value %}<code>{{ e.value }}</code>{% else %}<i>{{ 'xóa mọi dấu vết' if e.field == 'mark' else 'kết thúc trạng thái' }}</i>{% endif %}
       {% if e.permanent %}<span class="flag">vĩnh viễn</span>{% elif e.until_chapter %}<small>đến chương {{ e.until_chapter }}</small>{% endif %}
       {{ badge(e.status) }} {{ flags(e._flags) }} {% if e.reviewer %}<small class="muted">{{ e.reviewer }}</small>{% endif %}</div>
     {% if e.evidence %}<blockquote>{{ e.evidence }}{% if e.para %} <a class="small" href="/p/{{ e.project_id }}/c/{{ e.chapter_id }}?tab=text#para-{{ e.para }}">→ đoạn {{ e.para }}</a>{% endif %}</blockquote>{% endif %}
     <form x-show="edit" x-cloak hx-post="/event/{{ e.id }}/edit" hx-target="closest .row" hx-swap="outerHTML" class="grid4">
       <label>Trường <select name="field">{% for f, lb in e.labels.items() %}<option value="{{ f }}" {% if f==e.field %}selected{% endif %}>{{ lb }}</option>{% endfor %}</select></label>
-      <label>Giá trị <input name="value" value="{{ e.value }}"></label>
+      <label>Giá trị (tiếng Anh; dấu vết: "-tên" để xóa riêng) <input name="value" value="{{ e.value }}"></label>
       <label>Đến chương <input name="until_chapter" value="{{ e.until_chapter or '' }}"></label>
       <label><input type="checkbox" name="permanent" {% if e.permanent %}checked{% endif %}> Vĩnh viễn</label>
       <label class="span4">Bằng chứng <input name="evidence" value="{{ e.evidence }}"></label>
@@ -108,11 +119,11 @@
         <label>Góc máy <select name="shot">{% for s in ['wide','medium','close'] %}<option {% if s==b.shot %}selected{% endif %}>{{ s }}</option>{% endfor %}</select></label>
       </div>
       <datalist id="variants">{% for v in VARIANTS %}<option value="{{ v }}">{% endfor %}</datalist>
-      <label>Nhân vật (mỗi dòng: Tên | tư thế | biểu cảm)
+      <label>Nhân vật (mỗi dòng: Tên | tư thế | biểu cảm, tiếng Anh)
         <textarea name="cast" rows="3">{% for c in b.cast %}{{ c.name }} | {{ c.pose }} | {{ c.expression }}
 {% endfor %}</textarea></label>
       <label>Hành động (tiếng Anh) <input name="action" value="{{ b.action }}"></label>
-      <label>Không khí <input name="mood" value="{{ b.mood }}"></label>
+      <label>Không khí (tiếng Anh) <input name="mood" value="{{ b.mood }}"></label>
       <label>Lời thoại (mỗi dòng "Tên: lời", "(Tên: suy nghĩ)", dòng không có ":" là lời dẫn)
         <textarea name="dialogue" rows="3">{% for d in b.dialogue %}{% if d.kind=='thought' %}({{ d.character }}: {{ d.text }}){% elif d.kind=='caption' %}{{ d.text }}{% else %}{{ d.character }}: {{ d.text }}{% endif %}
 {% endfor %}</textarea></label>
@@ -141,14 +152,21 @@
 </div>
 {%- endmacro %}
 
+{% macro crop_overlay(box, cls) -%}
+<span class="cropbox {{ cls }}" style="left:{{ box[0]*100 }}%;top:{{ box[1]*100 }}%;width:{{ box[2]*100 }}%;height:{{ box[3]*100 }}%"></span>
+{%- endmacro %}
+
 {% macro scene_card(b) -%}
 <div class="row card scene" x-data="{edit:false, diff:false, narr:false}" tabindex="0">
   <div class="scene-top">
-    <div class="img master">{% if b.image_asset_id %}<a href="{{ media(b.image_asset_id) }}" target="_blank"><img src="{{ media(b.image_asset_id) }}" loading="lazy"></a>{% else %}<div class="ph">{{ {'missing':'chờ ảnh tham chiếu','generating':'đang tạo...','failed':'lỗi'}.get(b.image_status, b.image_status) }}</div>{% endif %}</div>
+    <div class="img master" style="aspect-ratio: {{ b.img_width or 16 }}/{{ b.img_height or 10 }}">
+      {% if b.image_asset_id %}<a href="{{ media(b.image_asset_id) }}" target="_blank"><img src="{{ media(b.image_asset_id) }}" loading="lazy"></a>
+        {% if b.crop.video_box %}{{ crop_overlay(b.crop.video_box, 'v') }}{{ crop_overlay(b.crop.panel_box, 'c') }}{% endif %}
+      {% else %}<div class="ph">{{ {'missing':'chờ ảnh tham chiếu','generating':'đang tạo...','failed':'lỗi'}.get(b.image_status, b.image_status) }}</div>{% endif %}</div>
     {% if b.image_asset_id and (b.segment or b.panel) %}
     <div class="crops">
       {% if b.segment %}<div class="crop" style="aspect-ratio: {{ b.video_aspect }}" title="Khung video"><img src="{{ media(b.image_asset_id) }}" style="object-position: {{ b.segment.focus_x*100 }}% {{ b.segment.focus_y*100 }}%"><span>video</span></div>{% endif %}
-      {% if b.panel %}<div class="crop" style="aspect-ratio: {{ b.img_width }}/{{ b.img_height }}" title="Khung truyện"><img src="{{ media(b.image_asset_id) }}" style="object-position: {{ b.panel.focus_x*100 }}% {{ b.panel.focus_y*100 }}%"><span>truyện</span></div>{% endif %}
+      {% if b.panel %}<div class="crop" style="aspect-ratio: {{ b.panel_aspect }}" title="Khung truyện"><img src="{{ media(b.image_asset_id) }}" style="object-position: {{ b.panel.focus_x*100 }}% {{ b.panel.focus_y*100 }}%"><span>truyện</span></div>{% endif %}
     </div>{% endif %}
   </div>
   <div class="head">Ch.{{ b.chapter_idx }} · nhịp {{ b.idx + 1 }} · {{ b.shot }}{% if b.loc %} · {{ b.loc.name }}{% endif %}
@@ -156,6 +174,7 @@
     {% if b.image_locked %}<span class="flag">🔒 khóa</span>{% endif %}
     {% if b.prompt_override %}<span class="flag">prompt tay</span>{% endif %}
     {% if b.stale.stale %}<a href="#" class="flag warnflag" @click.prevent="diff=!diff">ảnh cũ: xem thay đổi</a>{% endif %}
+    {% if b.crop.mismatch %}<span class="flag warnflag" title="Hai khung chỉ trùng {{ (b.crop.overlap*100)|int }}%">khung video và truyện lệch nhau</span>{% endif %}
     {% if b.panel and 'text_overflow' in b.panel.flags %}<span class="flag">thoại tràn khung</span>{% endif %}</div>
   <div x-show="diff" x-cloak class="diff small">{% if b.stale.stale %}{% if b.stale.waiting %}<div>Trạng thái đã đổi; đang chờ ảnh tham chiếu mới được tạo / duyệt.</div>{% elif b.stale.refs_changed %}<div>Ảnh tham chiếu đã đổi.</div>{% endif %}{{ b.stale.diff|safe }}{% endif %}</div>
   <div class="side">
@@ -174,7 +193,7 @@
   {% if b.segment %}{% set s = b.segment %}
   <div class="audio-row">
     <form hx-post="/segment/{{ s.id }}/frame" hx-target="closest .row" hx-swap="outerHTML" hx-trigger="change" class="inline small">
-      Video: <select name="focus">{% for k, lb in FOCUS_LABELS.items() %}<option value="{{ k }}" {% if focus_name(s.focus_x, s.focus_y)==k %}selected{% endif %}>{{ lb }}</option>{% endfor %}</select>
+      <span class="dot v"></span>Video: <select name="focus">{% for k, lb in FOCUS_LABELS.items() %}<option value="{{ k }}" {% if focus_name(s.focus_x, s.focus_y)==k %}selected{% endif %}>{{ lb }}</option>{% endfor %}</select>
       <select name="motion">{% for k, lb in MOTION_LABELS.items() %}<option value="{{ k }}" {% if s.motion==k %}selected{% endif %}>{{ lb }}</option>{% endfor %}</select></form>
     <span class="small">Giọng: {{ badge(s.audio_status) }} {{ flags(s.audio_flags|fromjson) }} {% if s.duration %}{{ s.duration|secs }}{% endif %}</span>
     {% if s.audio_status not in ('approved','missing','generating') %}<button class="ok small" hx-post="/review/segment_audio/{{ s.id }}/approve?as=scene" hx-target="closest .row" hx-swap="outerHTML">Duyệt giọng</button>{% endif %}
@@ -188,7 +207,8 @@
   {% if b.panel %}
   <div class="audio-row small">
     <form hx-post="/panel/{{ b.panel.id }}/frame" hx-target="closest .row" hx-swap="outerHTML" hx-trigger="change" class="inline">
-      Khung truyện: <select name="focus">{% for k, lb in FOCUS_LABELS.items() %}<option value="{{ k }}" {% if focus_name(b.panel.focus_x, b.panel.focus_y)==k %}selected{% endif %}>{{ lb }}</option>{% endfor %}</select></form>
+      <span class="dot c"></span>Khung truyện: <select name="focus">{% for k, lb in FOCUS_LABELS.items() %}<option value="{{ k }}" {% if focus_name(b.panel.focus_x, b.panel.focus_y)==k %}selected{% endif %}>{{ lb }}</option>{% endfor %}</select></form>
+    {% if b.segment %}<button class="ghost small" hx-post="/beat/{{ b.id }}/sync-focus" hx-vals='{"to": "panel"}' hx-target="closest .row" hx-swap="outerHTML" title="Đặt điểm lấy nét khung truyện giống khung video">Theo video</button>{% endif %}
     {% for bl in b.balloons or [] %}<span class="dlg">[{{ bl.kind }}] {{ bl.text[:60] }}</span>{% endfor %}
   </div>{% endif %}
 </div>

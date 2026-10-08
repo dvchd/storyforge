@@ -12,7 +12,7 @@ REGISTRY: dict[tuple[str, str], type[Adapter]] = {
     ("llm.chat", "openai"): OpenAICompatLLM,
     ("image.generate", "mock"): MockImage,
     ("image.generate", "command"): CommandImage,
-    ("image.generate", "mflux"): CommandImage,       # mflux chạy qua dòng lệnh
+    ("image.generate", "mflux"): CommandImage,
     ("image.generate", "diffusers"): DiffusersImage,
     ("tts.synthesize", "mock"): MockTTS,
     ("tts.synthesize", "edge_tts"): EdgeTTS,

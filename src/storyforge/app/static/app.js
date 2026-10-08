@@ -30,7 +30,8 @@ function comicEditor(pages) {
                                           body: JSON.stringify(data || {})}).then(r => r.json());
   const drag = (ev, onMove, onUp) => {
     const el = ev.currentTarget; el.setPointerCapture(ev.pointerId);
-    const move = e => onMove(e); const up = () => { el.removeEventListener('pointermove', move); el.removeEventListener('pointerup', up); onUp(); };
+    const move = e => onMove(e);
+    const up = () => { el.removeEventListener('pointermove', move); el.removeEventListener('pointerup', up); onUp(); };
     el.addEventListener('pointermove', move); el.addEventListener('pointerup', up);
   };
   return {
@@ -67,7 +68,6 @@ function comicEditor(pages) {
   };
 }
 
-// Phím tắt: j/k chọn mục, a duyệt, r từ chối, e sửa, g tạo lại, ? trợ giúp.
 (function () {
   let idx = -1;
   const rows = () => Array.from(document.querySelectorAll('.kbd-scope .row')).filter(r => r.offsetParent !== null);

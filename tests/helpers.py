@@ -1,12 +1,14 @@
 """Tiện ích kiểm thử: app + worker giả lập trong cùng tiến trình."""
 from __future__ import annotations
 
+import shutil
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
+import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 from storyforge.app import engine, policy  # noqa: E402
@@ -19,7 +21,8 @@ from storyforge.worker.client import WorkerClient  # noqa: E402
 from storyforge.worker.runner import MOCK_ADAPTERS, Worker  # noqa: E402
 
 EXAMPLES = ROOT / "examples"
-# kích thước nhỏ để kiểm thử nhanh
+HAS_FFMPEG = bool(shutil.which("ffmpeg") and shutil.which("ffprobe"))
+needs_ffmpeg = pytest.mark.skipif(not HAS_FFMPEG, reason="cần ffmpeg và ffprobe")
 FAST = {"video_width": 320, "video_height": 180, "video_fps": 8, "video_loudnorm": False, "video_transition": 0.2,
         "comic_page_width": 600, "comic_page_height": 900, "ref_size": 256, "image_area": 65536,
         "webtoon_width": 400}

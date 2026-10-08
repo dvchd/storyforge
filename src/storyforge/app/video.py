@@ -1,12 +1,11 @@
 """Dựng video từ ảnh tĩnh và audio bằng ffmpeg.
 
-Mỗi đoạn: cắt ảnh gốc theo điểm lấy nét (focus) -> chuyển động (zoom vào/ra, lia trái/phải)
+Mỗi đoạn: cắt ảnh gốc theo điểm lấy nét -> chuyển động (zoom vào/ra, lia trái/phải)
 -> mờ dần đầu cuối -> audio chuẩn hóa âm lượng (loudnorm) + khoảng lặng giữa đoạn.
-Sau đó nối các đoạn bằng concat (không mã hóa lại). Phụ đề mềm xuất riêng dạng SRT.
+Nối các đoạn bằng concat (không mã hóa lại). Phụ đề mềm xuất riêng dạng SRT.
 """
 from __future__ import annotations
 
-import math
 import re
 import subprocess
 import sys
@@ -15,7 +14,6 @@ from pathlib import Path
 
 from .checks import syllables
 
-MOTIONS = ["zoom_in", "zoom_out", "pan_left", "pan_right", "none"]
 MOTION_LABELS = {"auto": "Tự động", "zoom_in": "Zoom vào", "zoom_out": "Zoom ra", "pan_left": "Lia sang trái",
                  "pan_right": "Lia sang phải", "none": "Đứng yên"}
 
@@ -51,7 +49,6 @@ def probe_duration(path: Path | None, ffprobe: str) -> float | None:
         return None
 
 
-# ------------------------------------------------------------------ SRT
 def fmt_ts(t: float) -> str:
     ms = int(round(max(0.0, t) * 1000))
     h, ms = divmod(ms, 3600_000)
@@ -135,7 +132,6 @@ def build_srt(cues: list[dict]) -> str:
                      for i, c in enumerate(cues, 1))
 
 
-# ------------------------------------------------------------------ render
 def _zoompan(motion: str, z: float, frames: int, w: int, h: int, fps: int) -> str:
     cx, cy = "iw/2-(iw/zoom/2)", "ih/2-(ih/zoom/2)"
     if motion == "zoom_out":
@@ -167,8 +163,7 @@ def render(segments: list[dict], out_dir: Path, ffmpeg: str, ffprobe: str, width
     durs: list[float] = []
     for i, s in enumerate(segments):
         adur = probe_duration(s.get("audio"), ffprobe) if s.get("audio") else None
-        base = adur if adur else float(s.get("duration") or 3.0)
-        dur = max(1.0, base + gap)
+        dur = max(1.0, (adur if adur else float(s.get("duration") or 3.0)) + gap)
         durs.append(dur)
         frames = max(1, int(round(dur * fps)))
         motion = s.get("motion") or "auto"
@@ -208,6 +203,3 @@ def render(segments: list[dict], out_dir: Path, ffmpeg: str, ffprobe: str, width
     _run([ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", str(lst),
           "-c", "copy", "-movflags", "+faststart", str(final)])
     return final, durs
-
-
-math  # giữ import

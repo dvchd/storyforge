@@ -4,15 +4,36 @@
 <h1>{{ c.name }}</h1>
 {{ m.character_row(c) }}
 {% if c.notes %}<div class="card small"><b>Ghi chú:</b> {{ c.notes }}</div>{% endif %}
+<section class="card" x-data="{ch: '{{ chapters[-1].id if chapters else '' }}'}">
+  <h3>Dấu vết vĩnh viễn hiện tại</h3>
+  <p class="muted small">Mỗi dấu vết (sẹo, hình xăm...) là một mục riêng. Xóa một dấu vết không ảnh hưởng các dấu vết khác; ảnh tham chiếu mặt được tạo lại từ chương chọn.</p>
+  {% if chapters %}
+  <label class="inline-label">Áp dụng từ chương
+    <select x-model="ch">{% for chp in chapters %}<option value="{{ chp.id }}">{{ chp.idx }}: {{ chp.title }}</option>{% endfor %}</select></label>
+  <div class="marks">
+  {% for mk in marks %}
+    <span class="chip mark">{{ mk.text }} <small>từ ch.{{ mk.since }}</small>
+      <form class="inline" hx-post="/character/{{ c.id }}/mark/remove" hx-target="closest .chip" hx-swap="outerHTML"
+            hx-confirm="Xóa riêng dấu vết '{{ mk.text }}' từ chương đã chọn?">
+        <input type="hidden" name="mark" value="{{ mk.text }}"><input type="hidden" name="chapter_id" :value="ch">
+        <button class="x" title="Xóa riêng dấu vết này">×</button></form></span>
+  {% else %}<span class="muted">Không có.</span>{% endfor %}
+  </div>
+  <form method="post" action="/character/{{ c.id }}/mark/add" class="inline">
+    <input type="hidden" name="chapter_id" :value="ch">
+    <input name="mark" placeholder="thêm dấu vết, tiếng Anh: dragon tattoo on left arm" size="40"><button class="ghost">Thêm</button></form>
+  {% endif %}
+</section>
 <details class="card"><summary>Gộp nhân vật khác vào {{ c.name }}</summary>
   <form method="post" action="/merge/merge_character" class="inline" onsubmit="return confirm('Gộp? Thao tác không hoàn tác được.')">
     <input type="hidden" name="keep" value="{{ c.id }}">
     <select name="merge">{% for o in others %}<option value="{{ o.id }}">{{ o.name }} (#{{ o.id }}, ch.{{ o.first_chapter }})</option>{% endfor %}</select>
     <button>Gộp vào {{ c.name }}</button></form></details>
 <h2>Dòng thời gian trạng thái</h2>
-<p class="muted small">Dòng tô vàng là chương có thay đổi. "Dấu vết vĩnh viễn" làm đổi ảnh tham chiếu mặt ở mọi chương sau.</p>
+<p class="muted small">Dòng tô vàng là chương có thay đổi. Dấu vết vĩnh viễn làm đổi ảnh tham chiếu mặt ở mọi chương sau.</p>
 <table class="tbl small"><tr><th>Chương</th>{% for f in FIELDS %}<th>{{ FIELD_LABELS[f] }}</th>{% endfor %}</tr>
-{% for t in timeline %}<tr class="{{ 'chg' if t.changed else '' }}"><td><a href="/p/{{ p.id }}/c/{{ t.chapter.id }}?tab=state">{{ t.chapter.idx }}</a></td>{% for f in FIELDS %}<td>{{ t.state.get(f,'') }}</td>{% endfor %}</tr>{% endfor %}</table>
+{% for t in timeline %}<tr class="{{ 'chg' if t.changed else '' }}"><td><a href="/p/{{ p.id }}/c/{{ t.chapter.id }}?tab=state">{{ t.chapter.idx }}</a></td>
+  {% for f in FIELDS %}<td>{% if f == 'mark' %}{% for mk in marks_of(t.state) %}<span class="chip mark sm">{{ mk }}</span>{% endfor %}{% else %}{{ t.state.get(f,'') }}{% endif %}</td>{% endfor %}</tr>{% endfor %}</table>
 {% if appearances %}<p class="small">Xuất hiện trong khung hình ở chương: {% for a in appearances %}<a href="/p/{{ p.id }}/c/{{ a.id }}?tab=prod">{{ a.idx }}</a>{{ ', ' if not loop.last }}{% endfor %}</p>{% endif %}
 <h2>Ảnh tham chiếu</h2>
 <div class="gallery kbd-scope">{% for r in refs %}{{ m.ref_card(r) }}{% else %}<p class="muted">Chưa có.</p>{% endfor %}</div>

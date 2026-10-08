@@ -11,7 +11,8 @@ from fastapi import APIRouter, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
-from . import assets, checks, comic, dedupe, engine, jobs, llm, policy, prompts, review, state as st, video
+from . import (assets, checks, comic, dedupe, engine, jobs, llm, policy, prompts, review, state as st, system,
+               validate, video)
 from .config import get_settings
 from .db import db, jd, jl, now
 
@@ -19,10 +20,10 @@ HERE = Path(__file__).parent
 templates = Jinja2Templates(directory=str(HERE / "templates"))
 router = APIRouter()
 
-FOCUS_PRESETS = {"center": (.5, .5), "top": (.5, .15), "bottom": (.5, .85), "left": (.15, .5), "right": (.85, .5),
-                 "top-left": (.15, .15), "top-right": (.85, .15)}
-FOCUS_LABELS = {"center": "Giữa", "top": "Trên", "bottom": "Dưới", "left": "Trái", "right": "Phải",
-                "top-left": "Trên trái", "top-right": "Trên phải"}
+FOCUS_PRESETS = {"face": (.5, .35), "center": (.5, .5), "top": (.5, .15), "bottom": (.5, .85), "left": (.15, .5),
+                 "right": (.85, .5), "top-left": (.15, .15), "top-right": (.85, .15)}
+FOCUS_LABELS = {"face": "Mặt (trên giữa)", "center": "Giữa", "top": "Trên", "bottom": "Dưới", "left": "Trái",
+                "right": "Phải", "top-left": "Trên trái", "top-right": "Trên phải"}
 
 
 def focus_name(x: float, y: float) -> str:
@@ -47,6 +48,10 @@ def human_secs(t: Any) -> str:
     return f"{t / 3600:.1f} giờ"
 
 
+def media(aid: Any) -> str:
+    return f"/media/{aid}" if aid else ""
+
+
 env = templates.env
 env.filters.update(fromjson=lambda s: jl(s, []), secs=human_secs, bytes=human_bytes,
                    dt=lambda t: dt.datetime.fromtimestamp(t).strftime("%Y-%m-%d %H:%M") if t else "")
@@ -57,15 +62,11 @@ env.globals.update(
     FLAGS=list(policy.FLAG_LABELS), TITLES=review.TITLES, FOCUS_LABELS=FOCUS_LABELS, focus_name=focus_name,
     MOTION_LABELS=video.MOTION_LABELS, VARIANTS=list(prompts.VARIANT_TEXT), rank=engine.rank,
     MODE_NAMES={"video": "Video có lời đọc", "comic": "Truyện tranh", "both": "Video và truyện tranh"},
+    media=media, now_ts=now, STALL_WARN=jobs.STALL_WARN, missing_tools=system.missing_tools,
+    INSTALL_HINT=system.INSTALL_HINT, marks_of=st.marks_of, is_removal=st.is_removal,
+    removal_target=st.removal_target,
+    vendor=lambda name: (HERE / "static" / "vendor" / name).exists(),
 )
-
-
-def media(aid: Any) -> str:
-    return f"/media/{aid}" if aid else ""
-
-
-env.globals["media"] = media
-env.globals["vendor"] = lambda name: (HERE / "static" / "vendor" / name).exists()
 
 
 def hx(request: Request) -> bool:
@@ -114,22 +115,23 @@ def enrich(entity: str, row: dict) -> dict:
         r["cast"] = jl(r["cast_json"], [])
         r["dialogue"] = jl(r["dialogue_json"], [])
     elif entity == "ref":
-        table = "location" if r["owner_type"] == "location" else "character"
-        o = db.get(table, r["owner_id"])
+        o = db.get("location" if r["owner_type"] == "location" else "character", r["owner_id"])
         r["owner_name"] = o["name"] if o else "?"
-    elif entity in ("beat_image", "scene"):
+    elif entity == "beat_image":
         b = enrich("beat", row)
         ch = db.get("chapter", r["chapter_id"])
         p = engine.project(r["project_id"])
+        s = p["settings"]
         b["chapter_idx"] = ch["idx"] if ch else 0
         b["stale"] = engine.stale_info(p, ch, row) if ch else {"stale": False}
         b["segment"] = db.one("SELECT * FROM segment WHERE beat_id=?", r["id"])
         b["panel"] = db.one("SELECT * FROM panel WHERE beat_id=?", r["id"])
+        b["video_aspect"] = f"{s['video_width']}/{s['video_height']}"
         if b["panel"]:
             b["panel"]["flags"] = jl(b["panel"]["flags_json"], [])
+            b["panel_aspect"] = round(engine.panel_aspect(p, b["panel"]), 4)
             b["balloons"] = db.q("SELECT * FROM balloon WHERE panel_id=? ORDER BY idx", b["panel"]["id"])
-        b["video_aspect"] = f"{p['settings']['video_width']}/{p['settings']['video_height']}"
-        b["wants_video"], b["wants_comic"] = engine.wants_video(p), engine.wants_comic(p)
+        b["crop"] = engine.crop_info(p, row, b["segment"], b["panel"])
         b["_entity"] = "beat_image"
         b["_flags"] = jl(row.get("image_flags"), [])
         return b
@@ -204,6 +206,10 @@ def next_actions(ctx: dict, chapters: list[dict]) -> list[dict]:
     out = []
     if not chapters:
         out.append({"kind": "info", "text": "Chưa có chương nào. Nhập truyện ở cuối trang.", "href": "#import"})
+    miss = system.missing_tools()
+    if miss and engine.wants_video(p):
+        out.append({"kind": "bad", "text": f"Thiếu {', '.join(miss)}: sẽ không dựng được video. {system.INSTALL_HINT}",
+                    "href": "/storage#system"})
     if ctx["missing_workers"]:
         out.append({"kind": "bad", "text": "Có việc đang chờ nhưng không có worker nào nhận: "
                     + ", ".join(ctx["missing_workers"]), "href": "/workers"})
@@ -215,14 +221,29 @@ def next_actions(ctx: dict, chapters: list[dict]) -> list[dict]:
     failed = ctx["jobcounts"].get("failed", 0)
     if failed:
         out.append({"kind": "bad", "text": f"{failed} job lỗi", "href": f"/p/{p['id']}/jobs?status=failed"})
+    stalled = db.val("SELECT COUNT(*) FROM job WHERE project_id=? AND stalls>0 AND status IN ('queued','running')", p["id"]) or 0
+    if stalled:
+        out.append({"kind": "warn", "text": f"{stalled} job từng bị thu hồi vì đứng yên: kiểm tra worker",
+                    "href": f"/p/{p['id']}/jobs"})
     err = [c for c in chapters if c["status"] == "error"]
     if err:
         out.append({"kind": "bad", "text": f"Chương {', '.join(str(c['idx']) for c in err[:5])} bị lỗi",
                     "href": f"/p/{p['id']}/c/{err[0]['id']}"})
+    pub_err = [c for c in chapters if c["status"] == "done" and c["error"]]
+    if pub_err:
+        out.append({"kind": "bad", "text": f"Chương {', '.join(str(c['idx']) for c in pub_err[:5])} xuất bản lỗi",
+                    "href": f"/p/{p['id']}/c/{pub_err[0]['id']}"})
     recheck = [c for c in chapters if c["needs_recheck"]]
     if recheck:
         out.append({"kind": "info", "text": f"{len(recheck)} chương có trạng thái chương trước đã đổi, nên rà lại",
                     "href": f"/p/{p['id']}/c/{recheck[0]['id']}?tab=state"})
+    warns = [w for w in engine.settings_warnings(p) if w["level"] in ("warn", "error")]
+    if warns:
+        out.append({"kind": "warn", "text": f"Cài đặt có {len(warns)} cảnh báo: {warns[0]['text'][:120]}",
+                    "href": f"/p/{p['id']}/settings"})
+    crops = engine.crop_mismatches(p)
+    if crops:
+        out.append({"kind": "info", "text": f"{crops} nhịp có khung video và khung truyện lệch nhau nhiều", "href": None})
     overflow = sum(c["progress"]["overflow"] for c in chapters)
     if overflow:
         out.append({"kind": "info", "text": f"{overflow} khung truyện có lời thoại tràn", "href": None})
@@ -230,7 +251,8 @@ def next_actions(ctx: dict, chapters: list[dict]) -> list[dict]:
     if new and not p["autorun"]:
         out.append({"kind": "info", "text": f"{len(new)} chương chưa chạy. Bấm 'Chạy tất cả chương' hoặc bật Tự chạy.",
                     "href": None})
-    ready = [c for c in chapters if c["status"] == "done" and not c["video_asset_id"] and not c["comic_cbz_asset_id"]]
+    ready = [c for c in chapters if c["status"] == "done" and not c["video_asset_id"] and not c["comic_cbz_asset_id"]
+             and not c["error"]]
     if ready:
         out.append({"kind": "ok", "text": f"{len(ready)} chương đã xong, sẵn sàng xuất bản",
                     "href": f"/p/{p['id']}/c/{ready[0]['id']}"})
@@ -321,7 +343,6 @@ def run_all(pid: int, request: Request):
 
 @router.get("/p/{pid}/bible.md", response_class=PlainTextResponse)
 def story_bible(pid: int):
-    """Hồ sơ nhân vật và bối cảnh theo chương, dạng Markdown."""
     p = engine.project(pid)
     chapters = db.q("SELECT id, idx, title FROM chapter WHERE project_id=? ORDER BY idx", pid)
     out = [f"# {p['name']}: hồ sơ nhân vật và bối cảnh", "", f"Phong cách: {p['style_prompt']}", "", "## Nhân vật", ""]
@@ -357,23 +378,22 @@ def chapter_page(request: Request, pid: int, cid: int, tab: str = ""):
     scenes = [enrich("beat_image", b) for b in db.q("SELECT * FROM beat WHERE chapter_id=? AND status='approved' ORDER BY idx", cid)]
     new_chars = [enrich("character", c) for c in db.q("SELECT * FROM character WHERE project_id=? AND first_chapter=?", pid, ch["idx"])]
     new_locs = [enrich("location", l) for l in db.q("SELECT * FROM location WHERE project_id=? AND first_chapter=?", pid, ch["idx"])]
-    paras = llm.paragraphs(ch["text"])
     states = [{"c": c, "state": st.state_at(c["id"], ch["idx"])} for c in engine.all_chars(pid)
               if c["first_chapter"] <= ch["idx"] and c["status"] == "approved"]
     loc_states = [{"l": l, "state": st.loc_state_at(l["id"], ch["idx"])} for l in engine.locs(pid)
                   if l["first_chapter"] <= ch["idx"] and l["status"] == "approved"]
-    stale = sum(1 for s in scenes if s["stale"].get("stale"))
     chjobs = db.q("SELECT * FROM job WHERE (owner_type IN ('chapter_extract','chapter_beats','render_video','compose_comic') "
                   "AND owner_id=?) OR (owner_type='beat_image' AND owner_id IN (SELECT id FROM beat WHERE chapter_id=?)) "
                   "OR (owner_type='segment_audio' AND owner_id IN (SELECT id FROM segment WHERE chapter_id=?)) "
                   "ORDER BY id DESC LIMIT 40", cid, cid, cid)
     if not tab:
-        tab = ("prod" if ch["status"] in ("producing", "done") else
-               "beats" if ch["status"] in ("review_beats", "beating") else "state")
+        tab = "prod" if ch["status"] in ("producing", "done") else "beats" if ch["status"] in ("review_beats", "beating") else "state"
     nav = db.one("SELECT (SELECT id FROM chapter WHERE project_id=? AND idx<? ORDER BY idx DESC LIMIT 1) prev, "
                  "(SELECT id FROM chapter WHERE project_id=? AND idx>? ORDER BY idx LIMIT 1) nxt", pid, ch["idx"], pid, ch["idx"])
     return render(request, "chapter.html", ch=ch, events=events, beats=beats, scenes=scenes, new_chars=new_chars,
-                  new_locs=new_locs, paras=paras, states=states, loc_states=loc_states, stale=stale,
+                  new_locs=new_locs, paras=llm.paragraphs(ch["text"]), states=states, loc_states=loc_states,
+                  stale=sum(1 for s in scenes if s["stale"].get("stale")),
+                  crops=sum(1 for s in scenes if s["crop"].get("mismatch")),
                   progress=engine.chapter_progress(p, ch), cpol=policy.chapter_policy(ch), chjobs=chjobs, tab=tab,
                   nav=nav, all_chars=engine.all_chars(pid), all_locs=engine.locs(pid), **ctx)
 
@@ -395,12 +415,7 @@ def retry_chapter(cid: int, request: Request):
     ch = db.get("chapter", cid)
     if ch["status"] == "error":
         has_beats = db.val("SELECT COUNT(*) FROM beat WHERE chapter_id=?", cid)
-        if has_beats:
-            status = "review_beats"
-        elif ch["summary"]:
-            status = "state_ready"
-        else:
-            status = "new"
+        status = "review_beats" if has_beats else ("state_ready" if ch["summary"] else "new")
         db.update("chapter", cid, status=status, error="", run_requested=1)
     engine.advance_chapter(cid)
     return back(request)
@@ -416,6 +431,7 @@ def regen_stale(cid: int, request: Request):
 def publish(cid: int, request: Request):
     ch = db.get("chapter", cid)
     p = engine.project(ch["project_id"])
+    db.update("chapter", cid, error="")
     engine.audit(p["id"], "chapter", cid, "publish", "user")
     engine.publish(p, ch)
     return back(request)
@@ -451,14 +467,13 @@ def review_page(request: Request, pid: int, chapter: int | None = None, entity: 
         if entity and ent != entity:
             continue
         sql, args = review.pending_query(ent, pid, chapter)
-        rows = [enrich(ent, r) for r in db.q(sql + " ORDER BY id LIMIT 200", *args)]
-        sections.append({"entity": ent, "rows": rows})
+        sections.append({"entity": ent, "rows": [enrich(ent, r) for r in db.q(sql + " ORDER BY id LIMIT 200", *args)]})
     chapters = db.q("SELECT id, idx, title FROM chapter WHERE project_id=? ORDER BY idx", pid)
     return render(request, "review.html", sections=sections, chapters=chapters, chapter=chapter, entity=entity, **ctx)
 
 
 @router.post("/review/{entity}/{id_}/{action}")
-def review_action(entity: str, id_: int, action: str, request: Request, note: str = Form(""), as_: str = ""):
+def review_action(entity: str, id_: int, action: str, request: Request, note: str = Form("")):
     status = {"approve": "approved", "reject": "rejected", "reopen": "pending"}.get(action)
     if entity not in review.ENTITIES or not status:
         raise HTTPException(400)
@@ -486,8 +501,7 @@ def _split(s: str) -> list[str]:
 def characters_page(request: Request, pid: int):
     ctx = proj_ctx(pid)
     chars = [enrich("character", c) for c in engine.all_chars(pid, include_rejected=True)]
-    sugg = [s for s in dedupe.open_suggestions(pid)]
-    return render(request, "characters.html", chars=chars, suggestions=sugg, **ctx)
+    return render(request, "characters.html", chars=chars, suggestions=dedupe.open_suggestions(pid), **ctx)
 
 
 @router.get("/p/{pid}/characters/{cid}", response_class=HTMLResponse)
@@ -503,9 +517,35 @@ def character_page(request: Request, pid: int, cid: int):
                                           "('character_face','character_outfit') ORDER BY owner_type, first_chapter, id", cid)]
     appearances = db.q("SELECT DISTINCT c.idx, c.id, c.title FROM beat b JOIN chapter c ON c.id=b.chapter_id "
                        "WHERE b.project_id=? AND b.cast_json LIKE ? ORDER BY c.idx", pid, f'%"character_id": {cid}%')
-    others = [c for c in engine.all_chars(pid) if c["id"] != cid]
+    last = chapters[-1] if chapters else None
+    current = st.state_at(cid, last["idx"]) if last else {}
+    # dấu vết hiện tại kèm chương bắt đầu có
+    mark_since = {}
+    for e in sorted(db.q("SELECT * FROM state_event WHERE subject_type='character' AND subject_id=? AND field='mark' "
+                         "AND status='approved'", cid), key=lambda e: (e["chapter_idx"], e["id"])):
+        if e["value"] and not st.is_removal(e["value"]):
+            mark_since.setdefault(e["value"].strip().lower(), e["chapter_idx"])
+    marks = [{"text": m, "since": mark_since.get(m.strip().lower(), 1)} for m in st.marks_of(current)]
     return render(request, "character.html", c=enrich("character", row), timeline=st.timeline("character", cid, chapters),
-                  events=events, refs=refs, appearances=appearances, others=others, **ctx)
+                  events=events, refs=refs, appearances=appearances, chapters=chapters, marks=marks,
+                  others=[c for c in engine.all_chars(pid) if c["id"] != cid], **ctx)
+
+
+@router.post("/character/{cid}/mark/remove")
+def remove_mark(cid: int, request: Request, mark: str = Form(...), chapter_id: int = Form(...)):
+    """Xóa đúng một dấu vết (sẹo, hình xăm) từ chương chỉ định, giữ các dấu vết khác."""
+    engine.remove_mark(cid, mark, chapter_id)
+    if hx(request):
+        return HTMLResponse('<span class="chip gone">đã xóa</span>')
+    return back(request)
+
+
+@router.post("/character/{cid}/mark/add")
+def add_mark(cid: int, request: Request, mark: str = Form(...), chapter_id: int = Form(...)):
+    if mark.strip():
+        engine.add_manual_event(db.get("chapter", chapter_id), "character", cid, "mark", mark.strip(), True,
+                                evidence="(thêm thủ công)", note="add_mark")
+    return back(request)
 
 
 @router.post("/p/{pid}/characters/new")
@@ -546,9 +586,8 @@ def location_page(request: Request, pid: int, lid: int):
                                               "ORDER BY chapter_idx, id", lid)]
     refs = [enrich("ref", r) for r in db.q("SELECT * FROM ref WHERE owner_type='location' AND owner_id=? "
                                           "ORDER BY first_chapter, id", lid)]
-    others = [l for l in engine.locs(pid) if l["id"] != lid]
     return render(request, "location.html", l=enrich("location", row), timeline=st.timeline("location", lid, chapters),
-                  events=events, refs=refs, others=others, **ctx)
+                  events=events, refs=refs, others=[l for l in engine.locs(pid) if l["id"] != lid], **ctx)
 
 
 @router.post("/p/{pid}/locations/new")
@@ -581,9 +620,7 @@ def merge_entities(kind: str, request: Request, keep: int = Form(...), merge: in
 @router.post("/suggestion/{sid}/dismiss")
 def dismiss_suggestion(sid: int, request: Request):
     dedupe.dismiss(sid)
-    if hx(request):
-        return HTMLResponse("")
-    return back(request)
+    return HTMLResponse("") if hx(request) else back(request)
 
 
 @router.post("/p/{pid}/dedupe/scan")
@@ -616,16 +653,9 @@ def edit_event(eid: int, request: Request, field: str = Form(...), value: str = 
 @router.post("/c/{cid}/event/new")
 def new_event(cid: int, request: Request, subject: str = Form(...), field: str = Form(...), value: str = Form(""),
               permanent: str = Form(""), until_chapter: str = Form(""), evidence: str = Form("")):
-    ch = db.get("chapter", cid)
     stype, _, sid = subject.partition(":")
-    perm = bool(permanent)
-    eid = db.insert("state_event", project_id=ch["project_id"], subject_type=stype, subject_id=int(sid), chapter_id=cid,
-                    chapter_idx=ch["idx"], field=st.normalize_field(field, perm, stype), value=value.strip(),
-                    permanent=int(perm), until_chapter=int(until_chapter) if until_chapter.strip() else None,
-                    evidence=evidence, status="approved", reviewer="user", flags_json="[]", created_at=now())
-    engine.audit(ch["project_id"], "event", eid, "create", "user")
-    engine.mark_recheck_after(ch["project_id"], ch["idx"])
-    engine.refresh_refs(ch["project_id"], ch["idx"])
+    engine.add_manual_event(db.get("chapter", cid), stype, int(sid), field, value, bool(permanent),
+                            int(until_chapter) if until_chapter.strip() else None, evidence)
     return back(request)
 
 
@@ -635,9 +665,7 @@ def delete_event(eid: int, request: Request):
     db.delete("state_event", eid)
     engine.mark_recheck_after(e["project_id"], e["chapter_idx"])
     engine.refresh_refs(e["project_id"], e["chapter_idx"])
-    if hx(request):
-        return HTMLResponse("")
-    return back(request)
+    return HTMLResponse("") if hx(request) else back(request)
 
 
 # ============================================================== nhịp và ảnh cảnh
@@ -684,9 +712,7 @@ def edit_beat(bid: int, request: Request, location: str = Form(""), variant: str
     db.update("beat", bid, location_id=loc_id, variant=(variant or "default").strip().lower(),
               cast_json=jd(_parse_cast(p["id"], cast)), shot=shot, action=action.strip(), mood=mood.strip(),
               dialogue_json=jd(_parse_dialogue(dialogue)))
-    if hx(request):
-        return row_html(request, "beat", db.get("beat", bid))
-    return back(request)
+    return row_html(request, "beat", db.get("beat", bid)) if hx(request) else back(request)
 
 
 @router.post("/beat/{bid}/regen")
@@ -713,9 +739,8 @@ def beat_lock(bid: int, request: Request):
 @router.post("/beat/{bid}/upload")
 async def beat_upload(bid: int, request: Request, file: UploadFile):
     b = db.get("beat", bid)
-    data = await file.read()
-    aid = assets.save_bytes(data, Path(file.filename or "x.png").suffix.lower() or ".png", "scene", b["project_id"],
-                            meta={"uploaded": True})
+    aid = assets.save_bytes(await file.read(), Path(file.filename or "x.png").suffix.lower() or ".png", "scene",
+                            b["project_id"], meta={"uploaded": True})
     db.update("beat", bid, image_asset_id=aid, image_status="approved", image_reviewer="user:upload", image_locked=1)
     engine.audit(b["project_id"], "beat_image", bid, "upload", "user")
     engine.advance_chapter(b["chapter_id"])
@@ -738,19 +763,29 @@ def panel_frame(pid_: int, request: Request, focus: str = Form("center")):
     return scene_html(request, pn["beat_id"]) if hx(request) else back(request)
 
 
+@router.post("/beat/{bid}/sync-focus")
+def sync_focus(bid: int, request: Request, to: str = Form("panel")):
+    """Đồng bộ điểm lấy nét: khung truyện theo video (to=panel) hoặc ngược lại."""
+    seg, pn = db.one("SELECT * FROM segment WHERE beat_id=?", bid), db.one("SELECT * FROM panel WHERE beat_id=?", bid)
+    if seg and pn:
+        if to == "panel":
+            db.update("panel", pn["id"], focus_x=seg["focus_x"], focus_y=seg["focus_y"])
+        else:
+            db.update("segment", seg["id"], focus_x=pn["focus_x"], focus_y=pn["focus_y"])
+    return scene_html(request, bid) if hx(request) else back(request)
+
+
 @router.post("/segment/{sid}/regen-audio")
 def regen_segment_audio(sid: int, request: Request):
     engine.regen_audio(sid)
-    s = db.get("segment", sid)
-    return scene_html(request, s["beat_id"]) if hx(request) else back(request)
+    return scene_html(request, db.get("segment", sid)["beat_id"]) if hx(request) else back(request)
 
 
 @router.post("/segment/{sid}/narration")
 def edit_narration(sid: int, request: Request, narration: str = Form(...)):
     db.update("segment", sid, narration=narration.strip())
     engine.regen_audio(sid)
-    s = db.get("segment", sid)
-    return scene_html(request, s["beat_id"]) if hx(request) else back(request)
+    return scene_html(request, db.get("segment", sid)["beat_id"]) if hx(request) else back(request)
 
 
 # ============================================================== ảnh tham chiếu
@@ -771,7 +806,6 @@ def refs_page(request: Request, pid: int, status: str = "", kind: str = ""):
 @router.post("/ref/{rid}/regen")
 def regen_ref(rid: int, request: Request, prompt: str = Form("")):
     if prompt.strip():
-        # Prompt sửa tay: khóa để engine không ghi đè bằng prompt tự sinh.
         r = db.get("ref", rid)
         db.update("ref", rid, prompt=prompt.strip(), locked=1, status="missing", regen_count=r["regen_count"] + 1)
         engine.enqueue_ref(rid)
@@ -790,11 +824,9 @@ def lock_ref(rid: int, request: Request):
 
 @router.post("/ref/{rid}/upload")
 async def upload_ref(rid: int, request: Request, file: UploadFile):
-    """Tải ảnh tham chiếu của bạn (ảnh vẽ tay, ảnh chọn lọc) thay ảnh model tạo."""
     r = db.get("ref", rid)
-    data = await file.read()
-    aid = assets.save_bytes(data, Path(file.filename or "x.png").suffix.lower() or ".png", "ref", r["project_id"],
-                            meta={"uploaded": True})
+    aid = assets.save_bytes(await file.read(), Path(file.filename or "x.png").suffix.lower() or ".png", "ref",
+                            r["project_id"], meta={"uploaded": True})
     db.update("ref", rid, asset_id=aid, status="approved", reviewer="user:upload", locked=1)
     engine.audit(r["project_id"], "ref", rid, "upload", "user")
     engine.advance_producing(r["project_id"])
@@ -840,8 +872,9 @@ def preview_video(request: Request, pid: int, cid: int):
                      "audio_status": s["audio_status"], "text": s["narration"],
                      "duration": s["duration"] or video.estimate_duration(s["narration"]),
                      "fx": s["focus_x"], "fy": s["focus_y"], "motion": motion})
+    s = ctx["p"]["settings"]
     return render(request, "preview_video.html", ch=ch, segs_json=json.dumps(segs, ensure_ascii=False), n=len(segs),
-                  aspect=f"{ctx['p']['settings']['video_width']}/{ctx['p']['settings']['video_height']}", **ctx)
+                  aspect=f"{s['video_width']}/{s['video_height']}", **ctx)
 
 
 @router.get("/p/{pid}/c/{cid}/preview/comic", response_class=HTMLResponse)
@@ -878,8 +911,11 @@ def _jobs(pid: int | None, status: str) -> list[dict]:
     rows = db.q(sql + " ORDER BY CASE status WHEN 'running' THEN 0 WHEN 'queued' THEN 1 WHEN 'failed' THEN 2 "
                       "ELSE 3 END, id DESC LIMIT 300", *args)
     pos = jobs.queue_positions(rows)
+    t = now()
     for r in rows:
         r["pos"] = pos.get(r["id"])
+        r["hb_age"] = t - r["heartbeat_at"] if r["heartbeat_at"] else None
+        r["idle"] = t - (r["last_progress_at"] or r["started_at"] or t) if r["status"] == "running" else 0
     return rows
 
 
@@ -908,6 +944,8 @@ def job_retry(jid: int, request: Request):
         db.update("ref", oid, status="generating")
     elif ot in ("chapter_extract", "chapter_beats"):
         db.update("chapter", oid, status="extracting" if ot == "chapter_extract" else "beating", error="")
+    elif ot in ("render_video", "compose_comic"):
+        db.update("chapter", oid, error="")
     return back(request)
 
 
@@ -940,31 +978,38 @@ SETTING_GROUPS = [
         ("llm_model", "Model LLM (gợi ý cho worker)", "text"),
         ("llm_fallback_model", "Model dự phòng khi thử lại lần cuối", "text"),
         ("llm_temperature", "Temperature", "float"), ("llm_max_tokens", "Max tokens (trống = mặc định)", "int?"),
-        ("beats_span_mode", "Khi chia nhịp sai khoảng đoạn", "select:retry=Bắt LLM chia lại,adjust=Tự sửa và gắn cờ"),
+        ("beats_span_retries", "Số lần bắt LLM chia nhịp lại khi sai khoảng đoạn (0–2; hết lượt thì tự sửa + gắn cờ)", "int"),
         ("context_chapters", "Số chương tóm tắt đưa vào ngữ cảnh", "int"),
-        ("dedupe_threshold", "Ngưỡng gợi ý trùng tên (0..1)", "float"),
+        ("check_english", "Gắn cờ khi mô tả cho model ảnh không phải tiếng Anh", "bool"),
         ("llm_extra", "Hướng dẫn thêm cho LLM", "area"),
+    ]),
+    ("Gộp trùng", [
+        ("dedupe_mode", "Cách gợi ý gộp trùng",
+         "select:fuzzy=Theo tên gần giống,llm_only=Chỉ khi nhờ LLM rà (truyện nhiều tên trùng),off=Tắt"),
+        ("dedupe_threshold", "Ngưỡng tên gần giống (0.85–1; mặc định 0.90)", "float"),
     ]),
     ("Ảnh", [
         ("image_model", "Model ảnh (gợi ý cho worker)", "text"), ("image_steps", "Số bước (trống = mặc định)", "int?"),
         ("image_area", "Diện tích ảnh gốc mỗi nhịp (pixel)", "int"), ("ref_size", "Cạnh ảnh tham chiếu", "int"),
         ("max_cast_refs", "Số nhân vật tối đa có ảnh tham chiếu mỗi cảnh", "int"),
-        ("max_refs", "Số ảnh tham chiếu tối đa mỗi lần tạo", "int"), ("negative_prompt", "Negative prompt", "text"),
+        ("max_refs", "Số ảnh tham chiếu tối đa mỗi lần tạo", "int"),
+        ("crop_overlap_min", "Cảnh báo khi khung video và khung truyện trùng nhau dưới (0–1)", "float"),
+        ("negative_prompt", "Negative prompt", "text"),
     ]),
     ("Giọng đọc", [
         ("tts_model", "Model TTS (gợi ý cho worker)", "text"), ("tts_voice", "Giọng", "text"),
         ("tts_rate", "Tốc độ", "float"), ("language", "Ngôn ngữ", "text"),
     ]),
     ("Video", [
-        ("video_width", "Rộng", "int"), ("video_height", "Cao", "int"), ("video_fps", "FPS", "int"),
+        ("video_width", "Rộng (số chẵn)", "int"), ("video_height", "Cao (số chẵn)", "int"), ("video_fps", "FPS", "int"),
         ("video_encoder", "Bộ mã hóa (auto, libx264, h264_videotoolbox, h264_nvenc)", "text"),
-        ("video_zoom", "Mức zoom / lia", "float"), ("video_transition", "Thời gian mờ chuyển cảnh (giây, 0 = tắt)", "float"),
+        ("video_zoom", "Mức zoom / lia", "float"), ("video_transition", "Mờ chuyển cảnh (giây, 0 = tắt)", "float"),
         ("video_gap", "Khoảng lặng giữa đoạn (giây)", "float"), ("video_loudnorm", "Chuẩn hóa âm lượng", "bool"),
     ]),
     ("Truyện tranh", [
         ("comic_format", "Khổ", "select:page=Trang truyện in,webtoon=Webtoon cuộn dọc"),
         ("comic_page_width", "Rộng trang", "int"), ("comic_page_height", "Cao trang", "int"),
-        ("comic_max_panels", "Số khung tối đa mỗi trang", "int"), ("comic_margin", "Lề", "int"),
+        ("comic_max_panels", "Số khung tối đa mỗi trang (1–9)", "int"), ("comic_margin", "Lề", "int"),
         ("comic_gutter", "Khoảng cách khung", "int"), ("webtoon_width", "Rộng webtoon", "int"),
         ("webtoon_panels_per_page", "Số khung mỗi đoạn webtoon", "int"),
     ]),
@@ -972,13 +1017,19 @@ SETTING_GROUPS = [
         ("auto_regen_on_reject", "Tự tạo lại khi bị từ chối", "bool"), ("max_regen", "Số lần tạo lại tối đa", "int"),
     ]),
 ]
+GROUP_KEYS = {g: [k for k, _, _ in fields] for g, fields in SETTING_GROUPS}
 
 
 @router.get("/p/{pid}/settings", response_class=HTMLResponse)
 def settings_page(request: Request, pid: int):
     ctx = proj_ctx(pid)
-    return render(request, "settings.html", groups=SETTING_GROUPS, pp=policy.project_policy(ctx["p"]),
-                  eff=policy.effective(ctx["p"]), **ctx)
+    p = ctx["p"]
+    warns = engine.settings_warnings(p)
+    need = validate.required_image_area(p, p["settings"])
+    overridden = set((jl(p["settings_json"], {}) or {}).keys())
+    return render(request, "settings.html", groups=SETTING_GROUPS, pp=policy.project_policy(p), eff=policy.effective(p),
+                  warns=warns, warn_keys={w["key"] for w in warns}, need=need, overridden=overridden,
+                  defaults=engine.DEFAULT_SETTINGS, **ctx)
 
 
 @router.post("/p/{pid}/settings")
@@ -1006,8 +1057,28 @@ async def save_settings(pid: int, request: Request):
                     s[key] = v
             except ValueError:
                 pass
+    s = validate.fix(s)
     db.update("project", pid, name=str(form.get("name") or p["name"]), mode=str(form.get("mode") or p["mode"]),
               style_prompt=str(form.get("style_prompt") or ""), settings_json=jd(s))
+    return RedirectResponse(f"/p/{pid}/settings?saved=1", status_code=303)
+
+
+@router.post("/p/{pid}/settings/reset")
+def reset_settings(pid: int, group: str = ""):
+    p = db.get("project", pid)
+    s = jl(p["settings_json"], {}) or {}
+    for k in GROUP_KEYS.get(group, []):
+        s.pop(k, None)
+    db.update("project", pid, settings_json=jd(s))
+    return RedirectResponse(f"/p/{pid}/settings?saved=1#g-{group}", status_code=303)
+
+
+@router.post("/p/{pid}/settings/recommended")
+def apply_recommended(pid: int):
+    p = engine.project(pid)
+    s = jl(p["settings_json"], {}) or {}
+    s["image_area"] = validate.required_image_area(p, p["settings"])["recommended"]
+    db.update("project", pid, settings_json=jd(s))
     return RedirectResponse(f"/p/{pid}/settings?saved=1", status_code=303)
 
 
@@ -1046,8 +1117,9 @@ def workers_page(request: Request):
 
 @router.get("/storage", response_class=HTMLResponse)
 def storage_page(request: Request, result: str = ""):
-    return render(request, "storage.html", u=assets.usage(), result=result,
-                  backups=sorted(get_settings().backup_dir.glob("storyforge-*.db"), reverse=True)[:20])
+    s = get_settings()
+    return render(request, "storage.html", u=assets.usage(), result=result, cfg=s, font=comic.find_font(s.font_path),
+                  backups=sorted(s.backup_dir.glob("storyforge-*.db"), reverse=True)[:20])
 
 
 @router.post("/storage/gc")

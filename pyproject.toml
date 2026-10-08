@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "storyforge"
-version = "0.2.0"
+version = "0.3.0"
 description = "Quản lý trạng thái nhân vật, tài nguyên ảnh và hàng đợi AI để biến truyện chữ thành video minh họa có lời đọc và truyện tranh."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -29,4 +29,4 @@ packages = ["src/storyforge"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+pythonpath = ["src", "tests"]

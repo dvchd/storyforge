@@ -9,7 +9,7 @@
       <div class="muted">{{ MODE_NAMES[p.mode] }} · {{ p.done }}/{{ p.chapters }} chương xong
         {% if p.pending %}· <span class="pill warn">{{ p.pending }} chờ duyệt</span>{% endif %}
         {% if p.autorun %}· <span class="pill">tự chạy</span>{% endif %}{% if p.paused %}· <span class="pill bad">tạm dừng</span>{% endif %}</div></div>
-    <form method="post" action="/p/{{ p.id }}/delete" onsubmit="return confirm('Xóa dự án và toàn bộ dữ liệu? Ảnh sẽ được dọn ở trang Dung lượng.')"><button class="ghost">Xóa</button></form>
+    <form method="post" action="/p/{{ p.id }}/delete" onsubmit="return confirm('Xóa dự án và toàn bộ dữ liệu? Ảnh sẽ được dọn ở trang Hệ thống.')"><button class="ghost">Xóa</button></form>
   </div>
   {% else %}
   <div class="card"><p>Chưa có dự án. Tạo dự án ở bên phải, hoặc chạy thử dự án mẫu:</p>

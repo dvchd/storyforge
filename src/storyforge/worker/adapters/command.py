@@ -2,11 +2,8 @@
 
 Placeholder: {prompt} {negative} {width} {height} {seed} {steps} {output} {model}
              {text} {text_file} {voice} {rate} {input}
-Token "{refs}": danh sách ảnh tham chiếu (có ref_flag phía trước nếu cấu hình).
-Token "{refs_repeat}": lặp "ref_flag ảnh" cho từng ảnh.
-
-Tiến độ: đọc dòng log dạng "37%" hoặc "12/30" để báo về app.
-Hủy: tiến trình bị dừng ngay khi người dùng bấm Hủy trên giao diện.
+Token "{refs}": danh sách ảnh tham chiếu (có ref_flag phía trước nếu cấu hình); "{refs_repeat}": lặp "ref_flag ảnh".
+Dấu {...} khác được giữ nguyên. Tiến độ đọc từ log dạng "37%" hoặc "12/30". Bấm Hủy sẽ dừng tiến trình.
 """
 from __future__ import annotations
 
@@ -26,8 +23,6 @@ _FRAC = re.compile(r"\b(\d+)\s*/\s*(\d+)\b")
 
 
 class _Keep(dict):
-    """Giữ nguyên {tên} không phải placeholder (ví dụ trong đoạn mã Python của lệnh)."""
-
     def __missing__(self, key: str) -> str:
         return "{" + key + "}"
 
@@ -62,8 +57,12 @@ def render_cmd(tokens: list[str] | str, values: dict, refs: list[str], ref_flag:
 
 
 def run_cmd(cmd: list[str], timeout: float, ctx: JobContext) -> str:
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, cwd=ctx.workdir,
-                            bufsize=1, errors="replace")
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, cwd=ctx.workdir,
+                                bufsize=1, errors="replace")
+    except FileNotFoundError as e:
+        raise RuntimeError(f"Không tìm thấy chương trình '{cmd[0]}'. Kiểm tra đã cài và có trong PATH, "
+                           f"hoặc sửa mẫu lệnh trong worker.toml.") from e
     lines: list[str] = []
 
     def reader() -> None:
@@ -118,7 +117,6 @@ def find_output(path: Path) -> Path:
 
 
 class CommandImage(Adapter):
-    """cmd dùng khi không có ảnh tham chiếu, cmd_with_refs khi có."""
     kind = "image.generate"
     type_name = "command"
 
@@ -126,12 +124,11 @@ class CommandImage(Adapter):
         p = ImageGeneratePayload(**job.payload)
         out = ctx.workdir / f"img_{job.id}.png"
         refs = [str(ctx.fetch_asset(r.asset_id, r.sha256)) for r in p.refs][: int(self.cfg.get("max_refs", 4))]
-        steps = p.steps or self.cfg.get("default_steps", 8)
         vals = {"prompt": p.prompt, "negative": p.negative_prompt, "width": p.width, "height": p.height,
-                "seed": p.seed, "steps": steps, "output": str(out), "model": self.model}
+                "seed": p.seed, "steps": p.steps or self.cfg.get("default_steps", 8), "output": str(out), "model": self.model}
         tpl = self.cfg.get("cmd_with_refs") if refs and self.cfg.get("cmd_with_refs") else self.cfg["cmd"]
         if refs and not self.cfg.get("cmd_with_refs"):
-            refs = []   # công cụ không hỗ trợ ảnh tham chiếu
+            refs = []
         run_cmd(render_cmd(tpl, vals, refs, str(self.cfg.get("ref_flag", ""))), float(self.cfg.get("timeout", 1800)), ctx)
         f = find_output(out)
         return AdapterResult(output={"files": [f.name], "seed": p.seed}, files=[f], model_id=self.model)
@@ -150,8 +147,8 @@ class CommandTTS(Adapter):
                 "rate": p.rate, "output": str(out), "model": self.model}
         run_cmd(render_cmd(self.cfg["cmd"], vals, []), float(self.cfg.get("timeout", 600)), ctx)
         f = find_output(out)
-        dur = probe_duration(f, str(self.cfg.get("ffprobe", "ffprobe"))) or 0.0
-        return AdapterResult(output={"file": f.name, "duration": dur}, files=[f], model_id=self.model)
+        return AdapterResult(output={"file": f.name, "duration": probe_duration(f, str(self.cfg.get("ffprobe", "ffprobe"))) or 0.0},
+                             files=[f], model_id=self.model)
 
 
 class CommandRemoveBg(Adapter):
